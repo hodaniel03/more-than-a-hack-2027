@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from possession.deadball import dead_evidence, dead_probability  # noqa: E402
 from possession.features import control_vote, interpolate_ball, team_distances  # noqa: E402
-from possession.pipeline import predict  # noqa: E402
+from possession.pipeline import log_emissions, predict  # noqa: E402
+from possession.tagging import team_side  # noqa: E402
 from possession.states import A, D, H, drop_short_runs, viterbi  # noqa: E402
 from games import GAMES, GAME, half_video_blocks  # noqa: E402
 
@@ -89,6 +90,37 @@ class DeadBallTest(unittest.TestCase):
         self.assertGreater(both, alone)
         self.assertGreater(both, 0.8)
         self.assertEqual(set(dead_evidence(ball)), {"outside", "still", "set_piece", "missing"})
+
+
+class TaggingTest(unittest.TestCase):
+    @staticmethod
+    def event(code, team, start, end):
+        return {"code": code, "start_frame": start, "end_frame": end, "tags": {"Team": team}}
+
+    def test_team_side_reads_the_tag_by_code(self):
+        events = [
+            self.event("BUILD UP", "Barcelona", 0, 10),                    # attacker has it
+            self.event("DEFENDING IN MIDDLE THIRD", "Barcelona", 10, 20),  # defender: flip
+            self.event("SET PIECES", "N/A", 20, 30),                       # throw-in: no side
+            self.event("PROGRESSION", "Atletic Club", 30, 40),
+            self.event("CREATING CHANCES", "barcelona", 35, 40),           # disagree: none
+            self.event("GOALS", "Barcelona", 40, 50),                      # not a phase
+        ]
+        side = team_side(events, 50, "Barcelona", "Atletic Club")
+        self.assertTrue((side[:10] == 1).all())
+        self.assertTrue((side[10:20] == -1).all())
+        self.assertTrue((side[20:30] == 0).all())
+        self.assertTrue((side[30:35] == -1).all())
+        self.assertTrue((side[35:] == 0).all())
+
+    def test_tag_is_used_only_where_the_ball_says_nothing(self):
+        d_home = np.array([1.0, 1.0])                  # home in control on both frames
+        d_away = np.array([5.0, 5.0])
+        confidence = np.array([1.0, 0.0])              # ...but the ball is only seen on the first
+        side = np.array([-1, -1], dtype=np.int8)       # tags say away
+        em = log_emissions(d_home, d_away, confidence, np.full(2, 0.1), side)
+        self.assertGreater(em[0, H], em[0, A])         # seen ball wins over the tag
+        self.assertGreater(em[1, A], em[1, H])         # blind frame follows the tag
 
 
 class PipelineTest(unittest.TestCase):

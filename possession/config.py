@@ -70,6 +70,16 @@ MIN_CONTROL_S = 1.0
 SWITCH_HOME_AWAY = MIN_CONTROL_S * FPS * math.log(CONTROL_CERTAINTY / (1 - CONTROL_CERTAINTY))
 SWITCH_DEAD = 8.0
 
+# --- Smart Tagging hint where the ball is not seen (tagging.team_side). ---
+
+# The tags are phases, accurate to about a second, and several codes are fixed-length windows
+# (CREATING CHANCES is always 30 s) that run on past the end of a possession. So a single frame of
+# tag is worth little; what counts is a tag that keeps disagreeing with the current team. Asking for
+# TAG_SWITCH_S of uncontradicted disagreement inside a ball blackout before switching sets the
+# per-frame certainty: each tagged frame is worth SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS).
+TAG_SWITCH_S = 5.0
+TAG_CERTAINTY = 1.0 / (1.0 + math.exp(-SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS)))
+
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`
 # (FAQ.md). Source: starter/load_smart_tagging.py KICKOFF_VIDEO_FRAMES.
 SECOND_HALF_KICKOFF = 113742
