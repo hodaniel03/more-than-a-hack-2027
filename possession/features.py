@@ -28,6 +28,25 @@ def interpolate_ball(ball, max_gap):
     return filled, confidence
 
 
+def control_vote(d_home, d_away, confidence, radius, certainty):
+    """(N,) probability-like vote that home has the ball, 0.5 where nobody is in control.
+
+    A team is in control only when one of its players is within `radius` of the ball and no
+    opponent is. A ball in flight, a loose ball or a 50/50 is no evidence either way, so the state
+    model simply keeps the team it already had -- which is what the possession rules ask for.
+    """
+    home = d_home <= radius
+    away = d_away <= radius
+    with np.errstate(invalid="ignore"):
+        home &= ~away
+        away &= ~(d_home <= radius)
+    edge = (certainty - 0.5) * confidence
+    vote = np.full(len(d_home), 0.5)
+    vote[home] += edge[home]
+    vote[away] -= edge[away]
+    return vote
+
+
 def team_distances(ball, players, team):
     """Distance from the ball to the closest player of each team: (home, away), NaN if unknown."""
     delta = players - ball[:, None, :]

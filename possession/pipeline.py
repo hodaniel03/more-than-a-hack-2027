@@ -5,7 +5,7 @@ import numpy as np
 from games import GAME, GAMES, half_video_blocks
 from . import config
 from .deadball import dead_probability
-from .features import interpolate_ball, team_distances
+from .features import control_vote, interpolate_ball, team_distances
 from .states import A, D, H, LETTERS, drop_short_runs, viterbi
 from .tagging import set_piece_starts
 from .tracking import load_tracking
@@ -17,11 +17,11 @@ def log_emissions(d_home, d_away, confidence, p_dead):
     The team vote enters as a likelihood ratio (2 * vote), so an uninformative frame -- no ball,
     vote 0.5 -- adds nothing to H or A instead of halving both and handing the frame to D.
     """
-    diff = np.nan_to_num(d_away - d_home, nan=0.0)                  # >0: home is closer
-    vote = 1.0 / (1.0 + np.exp(-diff / config.DISTANCE_SCALE * confidence))
+    vote = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
+                        config.CONTROL_CERTAINTY)
     eps = 1e-6
     alive = 1.0 - p_dead
-    out = np.empty((len(diff), 3), dtype=np.float64)
+    out = np.empty((len(vote), 3), dtype=np.float64)
     out[:, H] = np.log(alive * 2.0 * vote + eps)
     out[:, A] = np.log(alive * 2.0 * (1.0 - vote) + eps)
     out[:, D] = np.log(p_dead + eps)
@@ -31,6 +31,10 @@ def log_emissions(d_home, d_away, confidence, p_dead):
 def predict(ball, players, team, game=GAME, speed=None, set_piece_starts=()):
     """Labels for every frame: viterbi inside the graded halves, `X` elsewhere."""
     n = GAMES[game]["n_video_frames"]
+    if speed is not None:
+        # Slots the tracker gives no speed for include two parked at a fixed spot near each goal;
+        # left in, they "control" every ball that comes near that spot.
+        players = np.where(np.isnan(speed)[:, :, None], np.nan, players)
     filled, confidence = interpolate_ball(ball, config.MAX_BALL_GAP)
     d_home, d_away = team_distances(filled, players, team)
     emission = log_emissions(d_home, d_away, confidence,

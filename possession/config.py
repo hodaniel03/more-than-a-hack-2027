@@ -5,6 +5,8 @@ reasoning or from other games, and write the reason next to the value. The value
 starting points, not results.
 """
 
+import math
+
 # Ball gaps up to this many frames are bridged by linear interpolation (25 frames = 1 s).
 MAX_BALL_GAP = 25
 
@@ -49,12 +51,23 @@ W_MISSING = 0.3
 # line, which takes a few seconds. Shorter `D` runs are noise and would split a possession in two.
 MIN_DEAD_S = 3.0
 
-# Metres over which the home/away distance difference saturates into a confident vote.
-DISTANCE_SCALE = 3.0
+# --- Team in control (features.control_vote). ---
+
+# A player in control has the ball within a stride; automatic tracking places a player by the
+# centre of the body and adds about half a metre of noise on top.
+CONTROL_RADIUS = 1.5
+# How often an uncontested "my player is next to the ball" frame really is that team's ball.
+# Tracking noise and identity swaps make roughly one frame in ten wrong.
+CONTROL_CERTAINTY = 0.9
+
+# A change of possession needs *controlled* possession (CHALLENGE.md): a touch, a deflection or a
+# won header is not one. Asking for a second of the new team's control before switching -- one
+# player holding it, or a reception plus a pass to a teammate -- sets the H<->A cost:
+# each frame of clean control is worth log(0.9 / 0.1) in the Viterbi.
+MIN_CONTROL_S = 1.0
 
 # Viterbi switch costs (log-probability units). Larger = fewer, longer possessions.
-# spellF1 punishes flicker far more than macroF1 does, so these matter more than any feature.
-SWITCH_HOME_AWAY = 12.0
+SWITCH_HOME_AWAY = MIN_CONTROL_S * FPS * math.log(CONTROL_CERTAINTY / (1 - CONTROL_CERTAINTY))
 SWITCH_DEAD = 8.0
 
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`

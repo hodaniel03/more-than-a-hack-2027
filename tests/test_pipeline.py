@@ -9,7 +9,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from possession.deadball import dead_evidence, dead_probability  # noqa: E402
-from possession.features import interpolate_ball, team_distances  # noqa: E402
+from possession.features import control_vote, interpolate_ball, team_distances  # noqa: E402
 from possession.pipeline import predict  # noqa: E402
 from possession.states import A, D, H, drop_short_runs, viterbi  # noqa: E402
 from games import GAMES, GAME, half_video_blocks  # noqa: E402
@@ -44,6 +44,13 @@ class FeaturesTest(unittest.TestCase):
         players = np.array([[[1, 0], [5, 0], [np.nan, np.nan]]], dtype=np.float32)
         home, away = team_distances(ball, players, np.array([0, 1, 1]))
         self.assertEqual((float(home[0]), float(away[0])), (1.0, 5.0))
+
+    def test_control_vote_only_counts_uncontested_control(self):
+        d_home = np.array([1.0, 1.0, 4.0, 4.0, np.nan, 1.0])
+        d_away = np.array([5.0, 1.2, 1.0, 6.0, np.nan, 5.0])
+        conf = np.array([1, 1, 1, 1, 1, 0.5])
+        vote = control_vote(d_home, d_away, conf, radius=1.5, certainty=0.9)
+        np.testing.assert_allclose(vote, [0.9, 0.5, 0.1, 0.5, 0.5, 0.7])
 
 
 class DeadBallTest(unittest.TestCase):
