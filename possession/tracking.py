@@ -14,11 +14,13 @@ HOME, AWAY = 0, 1
 
 
 def load_tracking(game=GAME, data_dir=None):
-    """(ball, players, team) in metres.
+    """(ball, players, team, speed) in metres and m/s.
 
     ball    (N, 2)      NaN where the tracker lost it (about 41% of graded frames)
     players (N, S, 2)   NaN where a slot is empty; S = 46 slots, NOT 22 players
     team    (S,)        HOME / AWAY per slot
+    speed   (N, S)      the tracker's own speed per slot, NaN where it gives none -- including the
+                        two slots parked at a fixed spot near each goal, which never move
     """
     meta_path, raw_path = require(["atd_meta", "atd_raw"], game, data_dir)
     n_frames = source_frames("tactical", game)
@@ -28,6 +30,7 @@ def load_tracking(game=GAME, data_dir=None):
 
     ball = np.full((n_frames, 2), np.nan, dtype=np.float32)
     players = np.full((n_frames, slots, 2), np.nan, dtype=np.float32)
+    speed = np.full((n_frames, slots), np.nan, dtype=np.float32)
 
     with open(raw_path) as handle:
         for line in handle:
@@ -40,9 +43,10 @@ def load_tracking(game=GAME, data_dir=None):
             for slot, group in enumerate(parts[1].split(";")[:slots]):
                 if group[:1] == "N":
                     continue
-                x, y = group.split(",")[:2]
+                x, y, s = group.split(",")[:3]
                 players[frame, slot] = (float(x) * length, float(y) * width)
+                speed[frame, slot] = float(s)
             if parts[2][:1] != "N":
                 x, y = parts[2].split(",")[:2]
                 ball[frame] = (float(x) * length, float(y) * width)
-    return ball, players, team
+    return ball, players, team, speed

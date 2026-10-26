@@ -31,3 +31,22 @@ def viterbi(log_emission, switch_home_away, switch_dead):
     for t in range(n - 1, 0, -1):
         path[t - 1] = back[t, path[t]]
     return path
+
+
+def drop_short_runs(path, state, min_len):
+    """Replace runs of `state` shorter than `min_len` with the label before them (after, at the
+    start). A run touching either end of the path is kept: it may be cut off, not short."""
+    path = path.copy()
+    n = len(path)
+    i = 0
+    while i < n:
+        if path[i] != state:
+            i += 1
+            continue
+        j = i
+        while j < n and path[j] == state:
+            j += 1
+        if j - i < min_len and i > 0 and j < n:
+            path[i:j] = path[i - 1]
+        i = j
+    return path

@@ -8,9 +8,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from possession.deadball import dead_evidence, dead_probability  # noqa: E402
 from possession.features import interpolate_ball, team_distances  # noqa: E402
 from possession.pipeline import predict  # noqa: E402
-from possession.states import A, H, viterbi  # noqa: E402
+from possession.states import A, D, H, drop_short_runs, viterbi  # noqa: E402
 from games import GAMES, GAME, half_video_blocks  # noqa: E402
 
 
@@ -20,6 +21,13 @@ class StatesTest(unittest.TestCase):
         em[20] = np.log([.05, .9, .05])               # one-frame glitch
         path = viterbi(em, 5.0, 5.0)
         self.assertTrue((path[:40] == H).all() and (path[40:] == A).all())
+
+    def test_drop_short_runs(self):
+        path = np.array([H] * 5 + [D] * 2 + [A] * 5 + [D] * 6 + [H] * 3 + [D] * 2)
+        out = drop_short_runs(path, D, 3)
+        self.assertTrue((out[5:7] == H).all())         # short run filled from before
+        self.assertTrue((out[12:18] == D).all())       # long run kept
+        self.assertTrue((out[-2:] == D).all())         # run at the end kept
 
 
 class FeaturesTest(unittest.TestCase):
@@ -38,13 +46,52 @@ class FeaturesTest(unittest.TestCase):
         self.assertEqual((float(home[0]), float(away[0])), (1.0, 5.0))
 
 
+class DeadBallTest(unittest.TestCase):
+    N = 400
+
+    def rolling_ball(self):
+        ball = np.full((self.N, 2), 34.0, dtype=np.float32)
+        ball[:, 0] = 20 + np.arange(self.N) * 0.1        # 2.5 m/s, inside the pitch
+        return ball
+
+    def test_walking_players_mean_dead_running_players_alive(self):
+        speed = np.full((self.N, 20), 3.0, dtype=np.float32)
+        speed[200:] = 0.8
+        p = dead_probability(self.rolling_ball(), speed)
+        self.assertLess(p[100], 0.2)
+        self.assertGreater(p[300], 0.6)
+
+    def test_ball_out_is_latched_through_a_tracking_gap(self):
+        ball = self.rolling_ball()
+        ball[100:110] = (50, -3)                         # over the touchline
+        ball[110:200] = np.nan                           # then lost
+        p = dead_probability(ball)
+        self.assertGreater(p[150], 0.9)
+        self.assertLess(p[250], 0.5)                     # seen inside again: no longer latched
+
+    def test_missing_ball_alone_is_not_dead(self):
+        ball = self.rolling_ball()
+        ball[100:300] = np.nan
+        self.assertLess(dead_probability(ball)[200], 0.5)
+
+    def test_set_piece_and_still_ball_add_up(self):
+        ball = self.rolling_ball()
+        ball[150:250] = (60, 34)                          # placed ball
+        alone = dead_probability(ball)[200]
+        both = dead_probability(ball, set_piece_starts=[200])[200]
+        self.assertGreater(both, alone)
+        self.assertGreater(both, 0.8)
+        self.assertEqual(set(dead_evidence(ball)), {"outside", "still", "set_piece", "missing"})
+
+
 class PipelineTest(unittest.TestCase):
     def test_labels_cover_every_frame_and_respect_graded_blocks(self):
         n = GAMES[GAME]["n_video_frames"]
-        ball = np.full((n, 2), 50.0, dtype=np.float32)
+        ball = np.full((n, 2), 34.0, dtype=np.float32)
+        ball[:, 0] = 30 + (np.arange(n) % 500) * 0.08    # rolling at 2 m/s, never placed
         players = np.full((n, 2, 2), np.nan, dtype=np.float32)
-        players[:, 0] = (49, 50)                      # home slot next to the ball
-        players[:, 1] = (60, 50)
+        players[:, 0] = ball - (1, 0)                    # home slot next to the ball
+        players[:, 1] = ball + (10, 0)
         labels = predict(ball, players, np.array([0, 1]))
         self.assertEqual(len(labels), n)
         (_, f1, l1), (_, f2, l2) = half_video_blocks(GAME)
