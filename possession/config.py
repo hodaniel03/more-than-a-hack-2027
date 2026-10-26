@@ -112,6 +112,18 @@ SNAP_MAX_S = 3.0
 TAG_SWITCH_S = 5.0
 TAG_CERTAINTY = 1.0 / (1.0 + math.exp(-SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS)))
 
+# --- Team-shape hint where the ball is not seen (shape.py). ---
+
+# Logistic coefficients for (territory m, width m, direction m/s), fitted on the ten validation
+# games' alive frames by `python validation/train_shape.py` (73-84% of frames right per game).
+# Territory ends up worthless once width and direction are in; width carries the most.
+# Per frame they are calibrated probabilities, but neighbouring frames repeat the same
+# information, so in the Viterbi the log-odds are multiplied by SHAPE_WEIGHT; 0 turns it off.
+# Validated leave-one-game-out (coefficients refitted without the scored game), spellF1 over the
+# ten games: off 0.435, 0.05 0.448, 0.1 0.449, 0.2 0.445, 0.4 0.437 -- the same on both datasets.
+SHAPE_COEF = (-0.0103, 0.3632, 0.4581)
+SHAPE_WEIGHT = 0.1
+
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`
 # (FAQ.md). Source: starter/load_smart_tagging.py KICKOFF_VIDEO_FRAMES.
 SECOND_HALF_KICKOFF = 113742

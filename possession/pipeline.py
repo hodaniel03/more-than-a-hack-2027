@@ -3,7 +3,7 @@
 import numpy as np
 
 from games import GAME, GAMES, half_video_blocks
-from . import config
+from . import config, shape
 from .deadball import dead_probability
 from .features import control_vote, interpolate_ball, team_distances
 from .states import A, D, H, LETTERS, drop_short_runs, snap_handovers, viterbi
@@ -11,21 +11,29 @@ from .tagging import set_piece_starts, tag_side
 from .tracking import load_tracking
 
 
-def log_emissions(d_home, d_away, confidence, p_dead, side=None):
+def log_emissions(d_home, d_away, confidence, p_dead, side=None, shape_z=None):
     """(N, 3) log-evidence for H, A, D from distances to the ball and the dead-ball prior.
 
     The team vote enters as a likelihood ratio (2 * vote), so an uninformative frame -- no ball,
     vote 0.5 -- adds nothing to H or A instead of halving both and handing the frame to D.
 
-    `side` is the Smart Tagging hint (+1 home, -1 away, 0 none). It is used only where the ball
-    gives no evidence at all, and weakly: the tags are phases, not possessions, so they overrun
-    hand-overs and are trusted only when they disagree with the current team for a while.
+    Where the ball gives no evidence at all, two weak hints take over, added in log-odds:
+    `side`, the Smart Tagging hint (+1 home, -1 away, 0 none) -- phases, not possessions, so they
+    overrun hand-overs and are trusted only when they disagree with the current team for a while --
+    and `shape_z`, the team-shape log-odds (shape.py), tempered by SHAPE_WEIGHT because
+    neighbouring frames of it are anything but independent.
     """
     vote = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
                         config.CONTROL_CERTAINTY)
+    blind = confidence == 0
+    z = np.zeros(int(blind.sum()))
     if side is not None:
-        blind = confidence == 0
-        vote[blind] = 0.5 + (config.TAG_CERTAINTY - 0.5) * side[blind]
+        tag = np.log(config.TAG_CERTAINTY / (1.0 - config.TAG_CERTAINTY))
+        z += tag * side[blind]
+    if shape_z is not None:
+        z += config.SHAPE_WEIGHT * shape_z[blind]
+    if side is not None or shape_z is not None:
+        vote[blind] = 1.0 / (1.0 + np.exp(-z))
     eps = 1e-6
     alive = 1.0 - p_dead
     out = np.empty((len(vote), 3), dtype=np.float64)
@@ -55,7 +63,12 @@ def predict_blocks(ball, players, team, blocks, pitch, speed=None, set_piece_sta
     filled, confidence = interpolate_ball(ball, config.MAX_BALL_GAP)
     d_home, d_away = team_distances(filled, players, team)
     p_dead = dead_probability(ball, speed, set_piece_starts, pitch, forced_dead)
-    emission = log_emissions(d_home, d_away, confidence, p_dead, side)
+    shape_z = None
+    if config.SHAPE_WEIGHT > 0:
+        sign = shape.attack_sign(players, team, blocks, pitch[0])
+        shape_z = shape.shape_logit(shape.features(players, team, sign, pitch[0]),
+                                    config.SHAPE_COEF)
+    emission = log_emissions(d_home, d_away, confidence, p_dead, side, shape_z)
 
     control = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
                            config.CONTROL_CERTAINTY)

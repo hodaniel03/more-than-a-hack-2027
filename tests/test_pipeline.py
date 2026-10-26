@@ -8,6 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from possession import config, shape  # noqa: E402
 from possession.deadball import dead_evidence, dead_probability  # noqa: E402
 from possession.features import control_vote, interpolate_ball, team_distances  # noqa: E402
 from possession.pipeline import log_emissions, predict  # noqa: E402
@@ -135,6 +136,50 @@ class TaggingTest(unittest.TestCase):
         em = log_emissions(d_home, d_away, confidence, np.full(2, 0.1), side)
         self.assertGreater(em[0, H], em[0, A])         # seen ball wins over the tag
         self.assertGreater(em[1, A], em[1, H])         # blind frame follows the tag
+
+
+class ShapeTest(unittest.TestCase):
+    N = 200
+
+    def players(self, home_attacks_right=True, home_spread=10.0, away_spread=4.0):
+        """Home keeper in its box, away keeper in its box, outfielders around midfield."""
+        rng = np.random.default_rng(0)
+        p = np.full((self.N, 6, 2), np.nan, dtype=np.float32)
+        left, right = 3.0, 102.0
+        p[:, 0] = (left if home_attacks_right else right, 34)          # home keeper
+        p[:, 3] = (right if home_attacks_right else left, 34)          # away keeper
+        p[:, 1:3, 0] = 52 + rng.normal(0, home_spread, (self.N, 2))
+        p[:, 1:3, 1] = 34 + rng.normal(0, home_spread, (self.N, 2))
+        p[:, 4:6, 0] = 52 + rng.normal(0, away_spread, (self.N, 2))
+        p[:, 4:6, 1] = 34 + rng.normal(0, away_spread, (self.N, 2))
+        return p, np.array([0, 0, 0, 1, 1, 1])
+
+    def test_attack_sign_from_where_the_keepers_stand(self):
+        for right in (True, False):
+            p, team = self.players(home_attacks_right=right)
+            sign = shape.attack_sign(p, team, [(0, self.N)], 105.0)
+            self.assertTrue((sign == (1 if right else -1)).all())
+
+    def test_wider_team_reads_as_in_possession(self):
+        p, team = self.players(home_spread=10.0, away_spread=3.0)
+        sign = shape.attack_sign(p, team, [(0, self.N)], 105.0)
+        feats = shape.features(p, team, sign, 105.0)
+        self.assertGreater(np.nanmean(feats[:, 1]), 0)             # width points to home
+        z = shape.shape_logit(feats, (0.0, 1.0, 0.0))
+        self.assertGreater(z[100], 0)
+
+    def test_shape_hint_only_where_the_ball_is_blind(self):
+        d = np.array([1.0, 1.0])
+        far = np.array([5.0, 5.0])
+        confidence = np.array([1.0, 0.0])
+        saved, config.SHAPE_WEIGHT = config.SHAPE_WEIGHT, 1.0
+        try:
+            with_hint = log_emissions(far, d, confidence, np.full(2, 0.1), None,
+                                      np.array([9.0, 9.0]))
+        finally:
+            config.SHAPE_WEIGHT = saved
+        self.assertGreater(with_hint[0, A], with_hint[0, H])          # seen ball: away controls
+        self.assertGreater(with_hint[1, H], with_hint[1, A])          # blind: shape says home
 
 
 class PipelineTest(unittest.TestCase):
