@@ -9,7 +9,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from validation import degrade  # noqa: E402
+from validation.idsse import fold_touches  # noqa: E402
 from validation.metrica import ground_truth  # noqa: E402
+from validation.run import blocks_of  # noqa: E402
 
 
 def ev(team, kind, start, end=None, subtype="", period=1):
@@ -50,6 +52,19 @@ class GroundTruthTest(unittest.TestCase):
         gt = ground_truth(events, 60)
         self.assertTrue((gt[15:40] == "D").all())
         self.assertTrue((gt[40:51] == "H").all())
+
+
+class IdsseTest(unittest.TestCase):
+    def test_fold_touches_only_folds_short_spells_between_the_same_team(self):
+        gt = np.array(list("HHHHAHHHH" "AAAAAHHAAAA" "HHHDDAD"))
+        out = fold_touches(gt, 3)
+        self.assertEqual("".join(out), "HHHHHHHHH" "AAAAAAAAAAA" "HHHDDAD")
+
+    def test_blocks_split_at_period_change(self):
+        gt = np.array(list("XXHHHHHHXX"))
+        periods = np.array([1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
+        self.assertEqual(blocks_of(gt, periods), [(2, 4), (4, 8)])
+        self.assertEqual(blocks_of(gt), [(2, 8)])
 
 
 class DegradeTest(unittest.TestCase):

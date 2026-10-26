@@ -7,6 +7,11 @@ the ball dead or the team owning it -- so no event interpretation is needed:
 
     D where BallStatus is dead, otherwise H or A from BallPossession.
 
+One difference matters. The DFL flag follows every touch: a deflection or a lost duel flips it
+for a few frames (a median spell of 3 s, ~90 per match under 1 s). The challenge does not count a
+touch without control as a change of possession (CHALLENGE.md), so `gt` folds an A-B-A spell of B
+shorter than TOUCH_S back into A. The flag as delivered is kept as `gt_raw`.
+
 The tracking is semi-automatic optical tracking checked by operators, i.e. cleaner than the ATD,
 so validation/degrade.py applies here exactly as for the Metrica games.
 
@@ -21,7 +26,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IDSSE_DIR = os.path.join(ROOT, "data", "external", "idsse")
 CACHE_DIR = os.path.join(ROOT, "data", "external", "cache")
 
-FIGSHARE = "https://springernature.figshare.com/ndownloader/files/{}"
+# The download_url the figshare API (v2/articles/28196177/files) gives for each file. The
+# springernature.figshare.com address kloppy uses sits behind a browser challenge.
+FIGSHARE = "https://ndownloader.figshare.com/files/{}"
 # match id -> (competition, meta file id, position file id), from the figshare record
 # 10.6084/m9.figshare.28196177 (the same ids kloppy's sportec.load_open_tracking_data uses).
 MATCHES = {
@@ -33,6 +40,25 @@ MATCHES = {
     "J03WQQ": ("DFL-COM-000002", 51643484, 51643529),
     "J03WR9": ("DFL-COM-000002", 51643490, 51643532),
 }
+
+
+TOUCH_S = 1.0
+FPS = 25
+
+
+def fold_touches(gt, max_frames):
+    """Relabel every H/A spell shorter than `max_frames` that sits between two spells of the other
+    team (A B A) as that team: a touch, not a change of possession."""
+    out = gt.copy()
+    change = np.flatnonzero(gt[1:] != gt[:-1]) + 1
+    bounds = np.concatenate(([0], change, [len(gt)]))
+    for k in range(1, len(bounds) - 2):
+        start, stop = bounds[k], bounds[k + 1]
+        before, here, after = gt[bounds[k - 1]], gt[start], gt[stop]
+        if (here in ("H", "A") and before == after and before in ("H", "A") and before != here
+                and stop - start < max_frames):
+            out[start:stop] = before
+    return out
 
 
 def paths(match):
@@ -58,8 +84,14 @@ def available():
 def load_game(match):
     """Same dict as validation.metrica.load_game: ball, players, team, speed, periods, gt."""
     cache = os.path.join(CACHE_DIR, "IDSSE_" + match + ".npz")
-    if os.path.isfile(cache):
-        return dict(np.load(cache))
+    if not os.path.isfile(cache):
+        _build_cache(match, cache)
+    data = dict(np.load(cache))
+    data["gt"] = fold_touches(data["gt_raw"], int(TOUCH_S * FPS))
+    return data
+
+
+def _build_cache(match, cache):
 
     from kloppy import sportec
     from validation.metrica import player_speed
@@ -99,8 +131,7 @@ def load_game(match):
         gt[idx[idx < alive[0]]] = "X"
 
     data = {"ball": ball, "players": players, "team": np.array(team, dtype=np.int8),
-            "periods": periods, "speed": player_speed(players), "gt": gt,
+            "periods": periods, "speed": player_speed(players), "gt_raw": gt,
             "pitch": np.array([length, width], dtype=np.float32)}
     os.makedirs(CACHE_DIR, exist_ok=True)
     np.savez_compressed(cache, **data)
-    return data

@@ -66,12 +66,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("specs", nargs="+", metavar="NAME=V1,V2,...")
     parser.add_argument("--modes", nargs="*", default=["atd"])
+    parser.add_argument("--games", nargs="*", metavar="PREFIX")
     parser.add_argument("--out")
     args = parser.parse_args()
 
     combos = grid(args.specs)
     names = list(combos[0])
-    games = load_games()
+    games = load_games(args.games)
     rows = run(games, combos, args.modes)
 
     if args.out:

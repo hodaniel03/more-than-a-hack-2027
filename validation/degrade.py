@@ -6,7 +6,9 @@ The sample games already lose the ball, but almost only while it is dead; in pla
   * ball blackouts that start in open play, with the length profile of the BAR-ATH tactical ATD
     (gaps over 3 s: median 11.6 s, 90th percentile 37 s), until a target share of alive frames has
     no ball. On BAR-ATH our own predicted-alive frames lack the ball 16% of the time; the default
-    target of 25% is deliberately harder than that.
+    target of 25% is deliberately harder than that. Likewise for dead frames, up to the 66% that
+    BAR-ATH's predicted-dead frames lack the ball: the Metrica games already lose it on ~95% of
+    them, the IDSSE games (official DFL tracking) never do.
   * player drop-outs: each player vanishes for spells, so that ~14% of player-frames are missing
     (the ATD tracks 18.9 moving players of 22 on average). Speed goes with the position.
   * ball position error. In Sample Games 1 and 2 the ball sits within 10 cm of the nearest player
@@ -26,6 +28,7 @@ GAP_MEDIAN_S = 11.6
 GAP_P90_S = 37.2
 GAP_RANGE_S = (3.0, 220.0)
 ALIVE_MISSING = 0.25
+DEAD_MISSING = 0.66
 PLAYER_MISSING = 0.14
 PLAYER_SPELL_S = 5.0
 BALL_ERROR_M = 0.7           # per-axis std: matches the ATD p5 and p10 (nearest_percentiles)
@@ -54,21 +57,35 @@ def nearest_percentiles(ball, players, mask, qs=tuple(ATD_NEAREST_PERCENTILES)):
     return {q: float(np.percentile(nearest, q)) for q in qs}
 
 
-def ball_blackouts(ball, alive, rng, target=ALIVE_MISSING):
-    """Copy of `ball` with lognormal blackouts started in alive frames until `target` of them are
-    missing."""
+def calibrated_error(ball, players, mask, grid=np.arange(0.0, 1.31, 0.1)):
+    """The ball error (per-axis std, metres) that brings this game's 10th percentile of the
+    ball-to-nearest-player distance closest to the ATD's. 0 for a game already as loose as the
+    ATD -- the IDSSE games are; the Metrica games need ~0.7 m. Seeded, so deterministic."""
+    target = ATD_NEAREST_PERCENTILES[10]
+    if nearest_percentiles(ball, players, mask, (10,))[10] >= target:
+        return 0.0
+    gaps = [abs(nearest_percentiles(ball_error(ball, np.random.default_rng(0), s), players, mask,
+                                    (10,))[10] - target) for s in grid]
+    return float(grid[int(np.argmin(gaps))])
+
+
+def ball_blackouts(ball, frames, rng, target=ALIVE_MISSING, confine=False):
+    """Copy of `ball` with lognormal blackouts started in `frames` (a mask) until `target` of
+    them are missing. With `confine`, a blackout only blanks frames inside the mask."""
     ball = ball.copy()
     sigma = np.log(GAP_P90_S / GAP_MEDIAN_S) / 1.2816
     mu = np.log(GAP_MEDIAN_S * FPS)
     lo, hi = (s * FPS for s in GAP_RANGE_S)
-    starts = np.flatnonzero(alive)
+    starts = np.flatnonzero(frames)
     missing = np.isnan(ball[:, 0])
-    n_alive = alive.sum()
-    while (missing & alive).sum() < target * n_alive:
+    n = frames.sum()
+    while (missing & frames).sum() < target * n:
         length = int(np.clip(rng.lognormal(mu, sigma), lo, hi))
         start = int(rng.choice(starts))
-        ball[start:start + length] = np.nan
-        missing[start:start + length] = True
+        span = slice(start, start + length)
+        blank = frames[span] if confine else np.ones(len(ball[span]), dtype=bool)
+        ball[span][blank] = np.nan
+        missing[span] |= blank
     return ball
 
 

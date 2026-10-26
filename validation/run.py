@@ -36,12 +36,14 @@ MODES = ("raw", "atd")
 SEEDS = (0, 1, 2)
 
 
-def load_games():
-    """Every validation game on disk: the three Metrica games, plus IDSSE if downloaded."""
-    games = {game: metrica.load_game(game) for game in metrica.GAMES}
-    for match in idsse.available():
-        games["IDSSE_" + match] = idsse.load_game(match)
-    return games
+def load_games(prefixes=None):
+    """Every validation game on disk: the three Metrica games, plus IDSSE if downloaded. With
+    `prefixes`, only the games whose name starts with one of them (e.g. "IDSSE", "Sample")."""
+    names = list(metrica.GAMES) + ["IDSSE_" + match for match in idsse.available()]
+    if prefixes:
+        names = [n for n in names if any(n.startswith(p) for p in prefixes)]
+    return {n: idsse.load_game(n[6:]) if n.startswith("IDSSE_") else metrica.load_game(n)
+            for n in names}
 
 
 @contextlib.contextmanager
@@ -61,10 +63,20 @@ def params(**overrides):
             setattr(config, name, value)
 
 
-def blocks_of(gt):
+def blocks_of(gt, periods=None):
+    """Graded [(first, stop)] spans, also split where the period changes: the IDSSE games run
+    straight from one half into the next, with no ungraded frames between them."""
     graded = (gt != "X").astype(np.int8)
     edges = np.diff(np.concatenate(([0], graded, [0])))
-    return list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
+    blocks = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)))
+    if periods is None:
+        return blocks
+    cuts = set((np.flatnonzero(periods[1:] != periods[:-1]) + 1).tolist())
+    out = []
+    for first, stop in blocks:
+        inner = sorted(c for c in cuts if first < c < stop)
+        out += list(zip([first] + inner, inner + [stop]))
+    return out
 
 
 def baseline(ball, players, team, blocks):
@@ -82,10 +94,15 @@ def baseline(ball, players, team, blocks):
 def inputs(data, mode, seed):
     ball, players, speed = data["ball"], data["players"], data["speed"]
     if mode == "atd":
+        if "ball_error" not in data:
+            seen = (data["gt"] != "X") & ~np.isnan(ball[:, 0])
+            data["ball_error"] = degrade.calibrated_error(ball, players, seen)
         rng = np.random.default_rng(seed)
         alive = np.isin(data["gt"], ("H", "A"))
         ball = degrade.ball_blackouts(ball, alive, rng)
-        ball = degrade.ball_error(ball, rng)
+        ball = degrade.ball_blackouts(ball, data["gt"] == "D", rng, target=degrade.DEAD_MISSING,
+                                      confine=True)
+        ball = degrade.ball_error(ball, rng, sigma=data["ball_error"])
         players, speed = degrade.player_dropouts(players, speed, rng)
     return ball, players, speed
 
@@ -102,7 +119,7 @@ def evaluate(games, modes=MODES, seeds=SEEDS, with_baseline=True, **overrides):
     rows = []
     for game in games:
         data = games[game]
-        blocks = blocks_of(data["gt"])
+        blocks = blocks_of(data["gt"], data.get("periods"))
         for mode in modes:
             for seed in (seeds if mode == "atd" else (0,)):
                 ball, players, speed = inputs(data, mode, seed)
@@ -153,6 +170,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--set", nargs="*", metavar="NAME=VALUE")
     parser.add_argument("--modes", nargs="*", default=list(MODES))
+    parser.add_argument("--games", nargs="*", metavar="PREFIX")
     args = parser.parse_args()
-    games = load_games()
+    games = load_games(args.games)
     print_table(summarise(evaluate(games, args.modes, **parse_overrides(args.set))))
