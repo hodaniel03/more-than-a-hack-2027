@@ -62,6 +62,13 @@ class DegradeTest(unittest.TestCase):
         self.assertTrue(0.25 <= missing < 0.35)
         np.testing.assert_array_equal(np.isnan(a), np.isnan(b))
 
+    def test_ball_error_has_the_set_size_and_is_smooth(self):
+        ball = np.zeros((20000, 2), dtype=np.float32)
+        out = degrade.ball_error(ball, np.random.default_rng(2), sigma=0.7, tau_s=0.4)
+        self.assertAlmostEqual(float(out.std()), 0.7, delta=0.1)
+        step = np.abs(np.diff(out[:, 0])).mean()
+        self.assertLess(step, 0.4)                       # independent noise would give ~0.79
+
     def test_player_dropouts_share(self):
         players = np.zeros((40000, 10, 2), dtype=np.float32)
         speed = np.zeros((40000, 10), dtype=np.float32)

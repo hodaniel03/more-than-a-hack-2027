@@ -1,6 +1,7 @@
 """Fetch the open validation games into data/external/ (gitignored):
 
     python validation/download.py              # Metrica's three public sample games, ~185 MB
+    python validation/download.py --idsse      # ...plus seven Bundesliga matches (IDSSE), ~2.6 GB
 
 These are *other* games, which RULES.md allows for training and validation in any amount. They are
 public, so the organisers can fetch exactly the same files with this script.
@@ -43,6 +44,15 @@ def metrica():
         fetch(METRICA_URL + name, os.path.join(EXTERNAL, "metrica", name))
 
 
+def idsse():
+    sys.path.insert(0, ROOT)
+    from validation.idsse import downloads
+    for url, path in downloads():
+        fetch(url, path)
+
+
 if __name__ == "__main__":
     metrica()
+    if "--idsse" in sys.argv[1:]:          # seven Bundesliga matches, ~2.6 GB
+        idsse()
     sys.exit(0)

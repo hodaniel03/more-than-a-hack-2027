@@ -17,8 +17,7 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from validation.metrica import GAMES, load_game  # noqa: E402
-from validation.run import evaluate, parse_overrides  # noqa: E402
+from validation.run import evaluate, load_games, parse_overrides  # noqa: E402
 
 METRICS = ("spellF1", "macroF1", "D_F1", "team_acc", "poss", "gt_poss")
 
@@ -72,7 +71,7 @@ if __name__ == "__main__":
 
     combos = grid(args.specs)
     names = list(combos[0])
-    games = {game: load_game(game) for game in GAMES}
+    games = load_games()
     rows = run(games, combos, args.modes)
 
     if args.out:

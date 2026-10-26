@@ -30,10 +30,18 @@ from possession.features import team_distances  # noqa: E402
 from possession.pipeline import predict_blocks  # noqa: E402
 from starter.baseline import smooth  # noqa: E402
 from validation import degrade  # noqa: E402
-from validation.metrica import GAMES, PITCH, load_game  # noqa: E402
+from validation import idsse, metrica  # noqa: E402
 
 MODES = ("raw", "atd")
 SEEDS = (0, 1, 2)
+
+
+def load_games():
+    """Every validation game on disk: the three Metrica games, plus IDSSE if downloaded."""
+    games = {game: metrica.load_game(game) for game in metrica.GAMES}
+    for match in idsse.available():
+        games["IDSSE_" + match] = idsse.load_game(match)
+    return games
 
 
 @contextlib.contextmanager
@@ -77,6 +85,7 @@ def inputs(data, mode, seed):
         rng = np.random.default_rng(seed)
         alive = np.isin(data["gt"], ("H", "A"))
         ball = degrade.ball_blackouts(ball, alive, rng)
+        ball = degrade.ball_error(ball, rng)
         players, speed = degrade.player_dropouts(players, speed, rng)
     return ball, players, speed
 
@@ -98,7 +107,8 @@ def evaluate(games, modes=MODES, seeds=SEEDS, with_baseline=True, **overrides):
             for seed in (seeds if mode == "atd" else (0,)):
                 ball, players, speed = inputs(data, mode, seed)
                 with params(**overrides):
-                    labels = predict_blocks(ball, players, data["team"], blocks, PITCH, speed)
+                    pitch = tuple(data["pitch"]) if "pitch" in data else metrica.PITCH
+                    labels = predict_blocks(ball, players, data["team"], blocks, pitch, speed)
                 rows.append(dict(game=game, mode=mode, seed=seed, system="pipeline",
                                  **score(data["gt"], labels)))
                 if with_baseline:
@@ -144,5 +154,5 @@ if __name__ == "__main__":
     parser.add_argument("--set", nargs="*", metavar="NAME=VALUE")
     parser.add_argument("--modes", nargs="*", default=list(MODES))
     args = parser.parse_args()
-    games = {game: load_game(game) for game in GAMES}
+    games = load_games()
     print_table(summarise(evaluate(games, args.modes, **parse_overrides(args.set))))
