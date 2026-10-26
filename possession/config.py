@@ -70,6 +70,11 @@ MIN_CONTROL_S = 1.0
 SWITCH_HOME_AWAY = MIN_CONTROL_S * FPS * math.log(CONTROL_CERTAINTY / (1 - CONTROL_CERTAINTY))
 SWITCH_DEAD = 8.0
 
+# A hand-over is moved to where the new team takes control (states.snap_handovers), searching at
+# most this far either side: a long pass or a clearance is in the air for two to three seconds.
+# 0 turns it off.
+SNAP_MAX_S = 3.0
+
 # --- Smart Tagging hint where the ball is not seen (tagging.team_side). ---
 
 # The tags are phases, accurate to about a second, and several codes are fixed-length windows

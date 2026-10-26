@@ -33,6 +33,42 @@ def viterbi(log_emission, switch_home_away, switch_dead):
     return path
 
 
+def snap_handovers(path, home_control, away_control, max_shift):
+    """Move each direct H<->A switch to where the new team takes control.
+
+    Between the old team's last touch and the new team's first one -- a pass in flight, a loose
+    ball -- nobody is in control, so the Viterbi path may switch anywhere in that stretch. The
+    possession rules say the ball stays with the last team until the other one controls it, so
+    within +/- `max_shift` frames (and never past the neighbouring switches) the switch goes to the
+    split that agrees best with the control evidence, the latest such split on a tie.
+    """
+    path = path.copy()
+    n = len(path)
+    change = np.flatnonzero(path[1:] != path[:-1]) + 1
+    bounds = np.concatenate(([0], change, [n]))
+    ctrl = {H: home_control, A: away_control}
+    left = 0                                           # where the current run really starts
+    for k in range(1, len(bounds) - 1):
+        i = bounds[k]
+        old, new = path[i - 1], path[i]
+        if D in (old, new):
+            left = i
+            continue
+        a = max(left, i - max_shift)
+        b = min(bounds[k + 1], i + max_shift)
+        left = i
+        old_c = np.concatenate(([0], np.cumsum(ctrl[old][a:b])))
+        new_c = np.concatenate(([0], np.cumsum(ctrl[new][a:b])))
+        agree = old_c + (new_c[-1] - new_c)            # old before split s, new from s on
+        best = np.flatnonzero(agree == agree.max())
+        best = best[(best > 0) & (best < b - a)]       # keep at least one frame of each
+        if len(best):
+            left = a + best[-1]
+            path[a:left] = old
+            path[left:b] = new
+    return path
+
+
 def drop_short_runs(path, state, min_len):
     """Replace runs of `state` shorter than `min_len` with the label before them (after, at the
     start). A run touching either end of the path is kept: it may be cut off, not short."""

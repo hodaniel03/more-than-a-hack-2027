@@ -16,7 +16,7 @@ missing-ball frames sit in gaps longer than 3 s, and many of those are open play
 
 import numpy as np
 
-from games import GAMES, half_video_blocks
+from games import GAME, GAMES
 from . import config
 
 
@@ -94,10 +94,11 @@ def near_set_piece(n_frames, set_piece_starts):
     return out
 
 
-def dead_evidence(ball, speed=None, set_piece_starts=(), game="BAR-ATH"):
+def dead_evidence(ball, speed=None, set_piece_starts=(), pitch=None):
     """Each signal's log-odds contribution, by name. All arrays are (N,)."""
     n = len(ball)
     seen = ~np.isnan(ball[:, 0])
+    pitch = pitch or GAMES[GAME]["pitch"]
     out = {}
 
     if speed is not None:
@@ -105,7 +106,7 @@ def dead_evidence(ball, speed=None, set_piece_starts=(), game="BAR-ATH"):
         term = np.clip((config.WALK_SPEED - smooth) / config.SPEED_SCALE, -2.0, 2.0)
         out["speed"] = config.W_SPEED * np.nan_to_num(term, nan=0.0)
 
-    outside = ball_outside(ball, GAMES[game]["pitch"])
+    outside = ball_outside(ball, pitch)
     latched = latch_out(outside, seen & ~outside, config.OUT_LATCH_FRAMES)
     out["outside"] = config.W_OUTSIDE * latched
     out["still"] = config.W_STILL * ball_still(ball, config.STILL_FRAMES)
@@ -114,15 +115,13 @@ def dead_evidence(ball, speed=None, set_piece_starts=(), game="BAR-ATH"):
     return out
 
 
-def dead_probability(ball, speed=None, set_piece_starts=(), game="BAR-ATH"):
-    """(N,) float in [0, 1]."""
+def dead_probability(ball, speed=None, set_piece_starts=(), pitch=None, forced_dead=()):
+    """(N,) float in [0, 1]. `forced_dead` is [(first, stop)] spans known to be dead, such as the
+    graded frames before a kick-off."""
     logit = np.full(len(ball), config.DEAD_PRIOR_LOGIT, dtype=np.float64)
-    for term in dead_evidence(ball, speed, set_piece_starts, game).values():
+    for term in dead_evidence(ball, speed, set_piece_starts, pitch).values():
         logit += term
     p = 1.0 / (1.0 + np.exp(-logit))
-
-    # The 2nd half is graded from the first frame of the block but kicks off later: all `D`.
-    for half, first, _ in half_video_blocks(game):
-        if half == 2:
-            p[first:config.SECOND_HALF_KICKOFF] = 1.0
+    for first, stop in forced_dead:
+        p[first:stop] = 1.0
     return p.astype(np.float32)

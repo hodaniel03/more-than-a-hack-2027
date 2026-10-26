@@ -6,7 +6,7 @@ from games import GAME, GAMES, half_video_blocks
 from . import config
 from .deadball import dead_probability
 from .features import control_vote, interpolate_ball, team_distances
-from .states import A, D, H, LETTERS, drop_short_runs, viterbi
+from .states import A, D, H, LETTERS, drop_short_runs, snap_handovers, viterbi
 from .tagging import set_piece_starts, tag_side
 from .tracking import load_tracking
 
@@ -36,22 +36,39 @@ def log_emissions(d_home, d_away, confidence, p_dead, side=None):
 
 
 def predict(ball, players, team, game=GAME, speed=None, set_piece_starts=(), side=None):
-    """Labels for every frame: viterbi inside the graded halves, `X` elsewhere."""
-    n = GAMES[game]["n_video_frames"]
+    """Labels for every frame of a provided game: viterbi inside the graded halves, `X` elsewhere."""
+    blocks = [(first, last + 1) for _, first, last in half_video_blocks(game)]
+    # The 2nd half is graded from the first frame of the block but kicks off later: all `D`.
+    forced_dead = [(blocks[1][0], config.SECOND_HALF_KICKOFF)]
+    return predict_blocks(ball, players, team, blocks, GAMES[game]["pitch"], speed,
+                          set_piece_starts, side, forced_dead)
+
+
+def predict_blocks(ball, players, team, blocks, pitch, speed=None, set_piece_starts=(),
+                   side=None, forced_dead=()):
+    """The same model for any game: arrays indexed by frame, `blocks` the [(first, stop)] spans to
+    label (one per half; the state model never runs across a gap), `X` everywhere else."""
     if speed is not None:
         # Slots the tracker gives no speed for include two parked at a fixed spot near each goal;
         # left in, they "control" every ball that comes near that spot.
         players = np.where(np.isnan(speed)[:, :, None], np.nan, players)
     filled, confidence = interpolate_ball(ball, config.MAX_BALL_GAP)
     d_home, d_away = team_distances(filled, players, team)
-    emission = log_emissions(d_home, d_away, confidence,
-                             dead_probability(ball, speed, set_piece_starts, game), side)
+    p_dead = dead_probability(ball, speed, set_piece_starts, pitch, forced_dead)
+    emission = log_emissions(d_home, d_away, confidence, p_dead, side)
 
-    labels = np.full(n, "X", dtype="<U1")
-    for _, first, last in half_video_blocks(game):
-        path = viterbi(emission[first:last + 1], config.SWITCH_HOME_AWAY, config.SWITCH_DEAD)
+    control = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
+                           config.CONTROL_CERTAINTY)
+    home_control, away_control = control > 0.5, control < 0.5
+
+    labels = np.full(len(ball), "X", dtype="<U1")
+    for first, stop in blocks:
+        path = viterbi(emission[first:stop], config.SWITCH_HOME_AWAY, config.SWITCH_DEAD)
         path = drop_short_runs(path, D, int(config.MIN_DEAD_S * config.FPS))
-        labels[first:last + 1] = LETTERS[path]
+        if config.SNAP_MAX_S > 0:
+            path = snap_handovers(path, home_control[first:stop], away_control[first:stop],
+                                  int(config.SNAP_MAX_S * config.FPS))
+        labels[first:stop] = LETTERS[path]
     return labels
 
 

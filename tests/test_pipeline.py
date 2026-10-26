@@ -12,7 +12,7 @@ from possession.deadball import dead_evidence, dead_probability  # noqa: E402
 from possession.features import control_vote, interpolate_ball, team_distances  # noqa: E402
 from possession.pipeline import log_emissions, predict  # noqa: E402
 from possession.tagging import team_side  # noqa: E402
-from possession.states import A, D, H, drop_short_runs, viterbi  # noqa: E402
+from possession.states import A, D, H, drop_short_runs, snap_handovers, viterbi  # noqa: E402
 from games import GAMES, GAME, half_video_blocks  # noqa: E402
 
 
@@ -22,6 +22,20 @@ class StatesTest(unittest.TestCase):
         em[20] = np.log([.05, .9, .05])               # one-frame glitch
         path = viterbi(em, 5.0, 5.0)
         self.assertTrue((path[:40] == H).all() and (path[40:] == A).all())
+
+    def test_snap_moves_handover_to_new_teams_first_control(self):
+        path = np.array([H] * 10 + [A] * 10)
+        home = np.zeros(20, dtype=bool)
+        away = np.zeros(20, dtype=bool)
+        home[2:5] = True                                 # home's last touch at 4
+        away[14:18] = True                               # away first controls at 14
+        out = snap_handovers(path, home, away, max_shift=10)
+        self.assertTrue((out[:14] == H).all() and (out[14:] == A).all())
+
+    def test_snap_leaves_dead_ball_alone(self):
+        path = np.array([H] * 5 + [D] * 5 + [A] * 5)
+        none = np.zeros(15, dtype=bool)
+        np.testing.assert_array_equal(snap_handovers(path, none, none, 10), path)
 
     def test_drop_short_runs(self):
         path = np.array([H] * 5 + [D] * 2 + [A] * 5 + [D] * 6 + [H] * 3 + [D] * 2)
