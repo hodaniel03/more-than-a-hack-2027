@@ -32,10 +32,10 @@ def grid(specs):
     return [dict(zip(names, combo)) for combo in itertools.product(*values)]
 
 
-def run(games, combos, modes):
+def run(games, combos, modes, tags=False):
     rows = []
     for k, combo in enumerate(combos):
-        for r in evaluate(games, modes, with_baseline=False, **combo):
+        for r in evaluate(games, modes, with_baseline=False, tags=tags, **combo):
             rows.append(dict(combo, **r))
         print("{}/{} {}".format(k + 1, len(combos), combo), flush=True)
     return rows
@@ -67,13 +67,15 @@ if __name__ == "__main__":
     parser.add_argument("specs", nargs="+", metavar="NAME=V1,V2,...")
     parser.add_argument("--modes", nargs="*", default=["atd"])
     parser.add_argument("--games", nargs="*", metavar="PREFIX")
+    parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     parser.add_argument("--out")
+    parser.add_argument("--tags", action="store_true", help="synthetic Smart Tagging")
     args = parser.parse_args()
 
     combos = grid(args.specs)
     names = list(combos[0])
-    games = load_games(args.games)
-    rows = run(games, combos, args.modes)
+    games = load_games(args.games, args.split)
+    rows = run(games, combos, args.modes, args.tags)
 
     if args.out:
         with open(args.out, "w", newline="") as handle:

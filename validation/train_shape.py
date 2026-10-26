@@ -58,9 +58,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--logo", nargs="*", type=float, metavar="SHAPE_WEIGHT")
     parser.add_argument("--games", nargs="*", metavar="PREFIX")
+    parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     args = parser.parse_args()
 
-    games = load_games(args.games)
+    games = load_games(args.games, args.split)
     data = {name: design(g) for name, g in games.items()}
     w = fit([d[0] for d in data.values()], [d[1] for d in data.values()])
     print("SHAPE_COEF = ({:.4f}, {:.4f}, {:.4f})".format(*w))

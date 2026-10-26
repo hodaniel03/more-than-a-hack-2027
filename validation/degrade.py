@@ -9,14 +9,22 @@ The sample games already lose the ball, but almost only while it is dead; in pla
     target of 25% is deliberately harder than that. Likewise for dead frames, up to the 66% that
     BAR-ATH's predicted-dead frames lack the ball: the Metrica games already lose it on ~95% of
     them, the IDSSE games (official DFL tracking) never do.
+  * a smoothed ball trajectory. The ATD's ball speeds are normal (99th percentile 24.5 m/s) but
+    its changes of velocity are smeared out in time: over +/- 3 frames the 99th percentile change
+    is 8.8 m/s against 18-20 m/s in the sample games, over +/- 10 frames they agree (~21 m/s).
+    A Gaussian of 5 frames (0.2 s) brings the short-scale figure to 9.2-9.7 m/s; without it
+    every touch looks sharper than the ATD can show.
   * player drop-outs: each player vanishes for spells, so that ~14% of player-frames are missing
     (the ATD tracks 18.9 moving players of 22 on average). Speed goes with the position.
   * ball position error. In Sample Games 1 and 2 the ball sits within 10 cm of the nearest player
     on a quarter of all frames -- it is attached to whoever has it -- while in the ATD that
     distance has a 10th percentile of 0.45 m and a median of 2 m. Without this, any control
-    radius looks good down to a few centimetres. The error is smooth in time (tracking error
-    drifts, it does not jump), and its size is set so the low percentiles of the ball-to-nearest-
-    player distance match the ATD's (see nearest_percentiles()).
+    radius looks good down to a few centimetres. Its size is set so the low percentiles of the
+    ball-to-nearest-player distance match the ATD's (see nearest_percentiles()), and its
+    smoothness so the ball's frame-to-frame jitter does too: the ATD ball is smooth (median
+    second difference 0.009 m), an offset that drifts, not one that shakes. A first version used
+    an AR(1) error, which looked right on the distance and was fifty times too jittery -- enough
+    to drown every touch and every placed ball in the Metrica games.
 
 Nothing here reads the BAR-ATH ground truth: the numbers are properties of its tracking.
 """
@@ -32,20 +40,39 @@ DEAD_MISSING = 0.66
 PLAYER_MISSING = 0.14
 PLAYER_SPELL_S = 5.0
 BALL_ERROR_M = 0.7           # per-axis std: matches the ATD p5 and p10 (nearest_percentiles)
-BALL_ERROR_TAU_S = 0.4       # correlation time of the error
+BALL_ERROR_TAU_S = 0.4       # Gaussian smoothing std: second difference 0.008 m on Sample Game 1
 # Ball-to-nearest-player distance in the BAR-ATH tactical ATD, graded frames with a ball.
 ATD_NEAREST_PERCENTILES = {5: 0.28, 10: 0.45, 25: 0.90}
+ATD_SECOND_DIFF_M = 0.009    # median |b(t+1) - 2 b(t) + b(t-1)| of the BAR-ATH ATD ball
+BALL_SMOOTH_FRAMES = 5       # Gaussian std; ATD jump p99 over +/- 3 frames: 8.8 m/s
+
+
+def ball_smoothing(ball, frames=BALL_SMOOTH_FRAMES):
+    """Copy of `ball` with its trajectory smoothed by a NaN-aware Gaussian of std `frames`.
+    Missing frames stay missing."""
+    if frames <= 0:
+        return ball.copy()
+    t = np.arange(-int(4 * frames), int(4 * frames) + 1)
+    kernel = np.exp(-0.5 * (t / frames) ** 2)
+    seen = ~np.isnan(ball[:, 0])
+    weight = np.convolve(seen.astype(float), kernel, "same")
+    out = np.full_like(ball, np.nan)
+    for i in (0, 1):
+        total = np.convolve(np.where(seen, ball[:, i], 0.0), kernel, "same")
+        out[seen, i] = total[seen] / weight[seen]
+    return out
 
 
 def ball_error(ball, rng, sigma=BALL_ERROR_M, tau_s=BALL_ERROR_TAU_S):
-    """Copy of `ball` plus a smooth (AR(1)) position error of per-axis std `sigma` metres."""
+    """Copy of `ball` plus a smooth position error of per-axis std `sigma` metres: white noise
+    smoothed by a Gaussian of std `tau_s`, rescaled to `sigma`."""
     n = len(ball)
-    rho = np.exp(-1.0 / (tau_s * FPS))
-    shocks = rng.normal(0.0, sigma * np.sqrt(1 - rho ** 2), size=(n, 2))
-    error = np.empty((n, 2))
-    error[0] = rng.normal(0.0, sigma, size=2)
-    for t in range(1, n):
-        error[t] = rho * error[t - 1] + shocks[t]
+    tau = tau_s * FPS
+    t = np.arange(-int(4 * tau), int(4 * tau) + 1)
+    kernel = np.exp(-0.5 * (t / tau) ** 2)
+    white = rng.normal(size=(n, 2))
+    error = np.stack([np.convolve(white[:, i], kernel, "same") for i in (0, 1)], axis=1)
+    error *= sigma / error.std(axis=0)
     return (ball + error).astype(ball.dtype)
 
 

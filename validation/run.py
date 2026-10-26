@@ -6,8 +6,9 @@
 
 Modes: `raw` runs on the sample tracking as published; `atd` first degrades it to look like the
 provided automatic tracking (validation/degrade.py), which is the one that predicts BAR-ATH.
-Smart Tagging does not exist for these games, so the SET PIECES term and the tag hint are off
-here -- this measures everything else.
+Smart Tagging does not exist for these games. By default the SET PIECES term and the tag hint
+are therefore off; with --tags, synthetic tags of BAR-ATH's measured quality are made for each
+game (validation/tags_sim.py), so the use of tags can be tested too.
 
 The baseline row is the published reference algorithm (nearest player, majority vote +/- 50
 frames) on the same arrays, so every number has a floor next to it.
@@ -29,17 +30,29 @@ from possession import config  # noqa: E402
 from possession.features import team_distances  # noqa: E402
 from possession.pipeline import predict_blocks  # noqa: E402
 from starter.baseline import smooth  # noqa: E402
-from validation import degrade  # noqa: E402
+from validation import degrade, tags_sim  # noqa: E402
 from validation import idsse, metrica  # noqa: E402
 
 MODES = ("raw", "atd")
 SEEDS = (0, 1, 2)
 
+# Locked away from every choice: one Metrica game and two IDSSE matches. Settings are picked on
+# the other seven ("dev"); these are scored only to confirm a decision already made, so that the
+# number reported for them was never optimised. (Everything up to commit 44c40eb was chosen on all
+# ten, so they are clean only for decisions made after that.)
+TEST_GAMES = ("Sample_Game_3", "IDSSE_J03WQQ", "IDSSE_J03WR9")
+SPLITS = ("dev", "test", "all")
 
-def load_games(prefixes=None):
-    """Every validation game on disk: the three Metrica games, plus IDSSE if downloaded. With
-    `prefixes`, only the games whose name starts with one of them (e.g. "IDSSE", "Sample")."""
+
+def load_games(prefixes=None, split="dev"):
+    """Validation games on disk: the three Metrica games, plus IDSSE if downloaded, restricted to
+    `split` ("dev" by default, "test", or "all"). With `prefixes`, only the games whose name
+    starts with one of them (e.g. "IDSSE", "Sample")."""
     names = list(metrica.GAMES) + ["IDSSE_" + match for match in idsse.available()]
+    if split == "dev":
+        names = [n for n in names if n not in TEST_GAMES]
+    elif split == "test":
+        names = [n for n in names if n in TEST_GAMES]
     if prefixes:
         names = [n for n in names if any(n.startswith(p) for p in prefixes)]
     return {n: idsse.load_game(n[6:]) if n.startswith("IDSSE_") else metrica.load_game(n)
@@ -56,6 +69,9 @@ def params(**overrides):
     if "SWITCH_HOME_AWAY" not in overrides:
         config.SWITCH_HOME_AWAY = config.MIN_CONTROL_S * config.FPS * math.log(
             config.CONTROL_CERTAINTY / (1 - config.CONTROL_CERTAINTY))
+    if "TAG_CERTAINTY" not in overrides:
+        config.TAG_CERTAINTY = 1.0 / (1.0 + math.exp(
+            -config.SWITCH_HOME_AWAY / (config.TAG_SWITCH_S * config.FPS)))
     try:
         yield
     finally:
@@ -94,6 +110,7 @@ def baseline(ball, players, team, blocks):
 def inputs(data, mode, seed):
     ball, players, speed = data["ball"], data["players"], data["speed"]
     if mode == "atd":
+        ball = degrade.ball_smoothing(ball)
         if "ball_error" not in data:
             seen = (data["gt"] != "X") & ~np.isnan(ball[:, 0])
             data["ball_error"] = degrade.calibrated_error(ball, players, seen)
@@ -114,8 +131,21 @@ def score(gt, labels):
             "poss": r["n_pred_spells"], "gt_poss": r["n_gt_spells"]}
 
 
-def evaluate(games, modes=MODES, seeds=SEEDS, with_baseline=True, **overrides):
-    """[{game, mode, seed, system, metrics...}] for every combination."""
+def synthetic_tags(data, seed, quality=None):
+    """(side, set_piece_starts) for one game and seed. `quality` may override keep / flip (team
+    phases) and stop_cover / false_tags (set pieces)."""
+    quality = quality or {}
+    rng = np.random.default_rng(1000 + seed)
+    side = tags_sim.team_side(data["gt"], rng, **{k: v for k, v in quality.items()
+                                                  if k in ("keep", "flip")})
+    starts = tags_sim.set_piece_starts(data["gt"], rng, **{k: v for k, v in quality.items()
+                                                           if k in ("stop_cover", "false_tags")})
+    return side, starts
+
+
+def evaluate(games, modes=MODES, seeds=SEEDS, with_baseline=True, tags=False, **overrides):
+    """[{game, mode, seed, system, metrics...}] for every combination. `tags`: False, True for
+    synthetic tags, or a dict of tag quality ({"keep": .., "flip": ..})."""
     rows = []
     for game in games:
         data = games[game]
@@ -123,9 +153,12 @@ def evaluate(games, modes=MODES, seeds=SEEDS, with_baseline=True, **overrides):
         for mode in modes:
             for seed in (seeds if mode == "atd" else (0,)):
                 ball, players, speed = inputs(data, mode, seed)
+                side, starts = (synthetic_tags(data, seed, tags if isinstance(tags, dict) else None)
+                                if tags else (None, ()))
                 with params(**overrides):
                     pitch = tuple(data["pitch"]) if "pitch" in data else metrica.PITCH
-                    labels = predict_blocks(ball, players, data["team"], blocks, pitch, speed)
+                    labels = predict_blocks(ball, players, data["team"], blocks, pitch, speed,
+                                            starts, side)
                 rows.append(dict(game=game, mode=mode, seed=seed, system="pipeline",
                                  **score(data["gt"], labels)))
                 if with_baseline:
@@ -171,6 +204,9 @@ if __name__ == "__main__":
     parser.add_argument("--set", nargs="*", metavar="NAME=VALUE")
     parser.add_argument("--modes", nargs="*", default=list(MODES))
     parser.add_argument("--games", nargs="*", metavar="PREFIX")
+    parser.add_argument("--split", choices=SPLITS, default="dev")
+    parser.add_argument("--tags", action="store_true", help="synthetic Smart Tagging")
     args = parser.parse_args()
-    games = load_games(args.games)
-    print_table(summarise(evaluate(games, args.modes, **parse_overrides(args.set))))
+    games = load_games(args.games, args.split)
+    print_table(summarise(evaluate(games, args.modes, tags=args.tags,
+                                   **parse_overrides(args.set))))

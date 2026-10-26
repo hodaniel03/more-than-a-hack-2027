@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from possession import config, shape  # noqa: E402
 from possession.deadball import dead_evidence, dead_probability  # noqa: E402
-from possession.features import control_vote, interpolate_ball, team_distances  # noqa: E402
+from possession.features import (ball_touches, control_vote, interpolate_ball,  # noqa: E402
+                                 team_distances)
 from possession.pipeline import log_emissions, predict  # noqa: E402
 from possession.tagging import team_side  # noqa: E402
 from possession.states import A, D, H, drop_short_runs, snap_handovers, viterbi  # noqa: E402
@@ -61,6 +62,22 @@ class FeaturesTest(unittest.TestCase):
         home, away = team_distances(ball, players, np.array([0, 1, 1]))
         self.assertEqual((float(home[0]), float(away[0])), (1.0, 5.0))
 
+    def test_ball_touches_finds_the_kick_and_who_made_it(self):
+        n = 120
+        ball = np.zeros((n, 2), dtype=np.float32)
+        ball[:60, 0] = 50.0                               # at a home player's feet
+        ball[60:, 0] = 50.0 + np.arange(n - 60) * 0.6     # struck at frame 60: 15 m/s
+        ball[:, 1] = 30.0
+        d_home = np.where(np.arange(n) < 62, 0.5, 8.0)
+        d_away = np.full(n, 10.0)
+        touch = ball_touches(ball, d_home, d_away, jump=6.0, radius=2.0, lag=3)
+        hits = np.flatnonzero(touch)
+        self.assertEqual(len(hits), 1)
+        self.assertLessEqual(abs(int(hits[0]) - 60), 2)
+        self.assertEqual(int(touch[hits[0]]), 1)
+        far = ball_touches(ball, np.full(n, 5.0), d_away, jump=6.0, radius=2.0, lag=3)
+        self.assertFalse(far.any())                       # nobody within reach: no touch
+
     def test_control_vote_only_counts_uncontested_control(self):
         d_home = np.array([1.0, 1.0, 4.0, 4.0, np.nan, 1.0])
         d_away = np.array([5.0, 1.2, 1.0, 6.0, np.nan, 5.0])
@@ -100,8 +117,12 @@ class DeadBallTest(unittest.TestCase):
     def test_set_piece_and_still_ball_add_up(self):
         ball = self.rolling_ball()
         ball[150:250] = (60, 34)                          # placed ball
-        alone = dead_probability(ball)[200]
-        both = dead_probability(ball, set_piece_starts=[200])[200]
+        saved, config.W_SET_PIECE = config.W_SET_PIECE, 1.5   # off in config.py; test the term
+        try:
+            alone = dead_probability(ball)[200]
+            both = dead_probability(ball, set_piece_starts=[200])[200]
+        finally:
+            config.W_SET_PIECE = saved
         self.assertGreater(both, alone)
         self.assertGreater(both, 0.8)
         self.assertEqual(set(dead_evidence(ball)), {"outside", "still", "set_piece", "missing"})

@@ -5,13 +5,13 @@ import numpy as np
 from games import GAME, GAMES, half_video_blocks
 from . import config, shape
 from .deadball import dead_probability
-from .features import control_vote, interpolate_ball, team_distances
+from .features import ball_touches, control_vote, interpolate_ball, team_distances
 from .states import A, D, H, LETTERS, drop_short_runs, snap_handovers, viterbi
 from .tagging import set_piece_starts, tag_side
 from .tracking import load_tracking
 
 
-def log_emissions(d_home, d_away, confidence, p_dead, side=None, shape_z=None):
+def log_emissions(d_home, d_away, confidence, p_dead, side=None, shape_z=None, touch=None):
     """(N, 3) log-evidence for H, A, D from distances to the ball and the dead-ball prior.
 
     The team vote enters as a likelihood ratio (2 * vote), so an uninformative frame -- no ball,
@@ -22,6 +22,10 @@ def log_emissions(d_home, d_away, confidence, p_dead, side=None, shape_z=None):
     overrun hand-overs and are trusted only when they disagree with the current team for a while --
     and `shape_z`, the team-shape log-odds (shape.py), tempered by SHAPE_WEIGHT because
     neighbouring frames of it are anything but independent.
+
+    `touch` (+1 / -1 / 0, features.ball_touches) adds W_TOUCH log-odds for the touching team on
+    the frame of the touch: a reception or a pass is sharper evidence than standing near the ball,
+    and it is what lets a short possession pay for its two switches.
     """
     vote = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
                         config.CONTROL_CERTAINTY)
@@ -34,6 +38,10 @@ def log_emissions(d_home, d_away, confidence, p_dead, side=None, shape_z=None):
         z += config.SHAPE_WEIGHT * shape_z[blind]
     if side is not None or shape_z is not None:
         vote[blind] = 1.0 / (1.0 + np.exp(-z))
+    if touch is not None and config.W_TOUCH > 0:
+        hit = touch != 0
+        logit = np.log(vote[hit] / (1.0 - vote[hit])) + config.W_TOUCH * touch[hit]
+        vote[hit] = 1.0 / (1.0 + np.exp(-logit))
     eps = 1e-6
     alive = 1.0 - p_dead
     out = np.empty((len(vote), 3), dtype=np.float64)
@@ -68,11 +76,18 @@ def predict_blocks(ball, players, team, blocks, pitch, speed=None, set_piece_sta
         sign = shape.attack_sign(players, team, blocks, pitch[0])
         shape_z = shape.shape_logit(shape.features(players, team, sign, pitch[0]),
                                     config.SHAPE_COEF)
-    emission = log_emissions(d_home, d_away, confidence, p_dead, side, shape_z)
+    touch = None
+    if config.W_TOUCH > 0:
+        touch = ball_touches(ball, d_home, d_away, config.TOUCH_JUMP, config.TOUCH_RADIUS,
+                             int(config.TOUCH_LAG))
+    emission = log_emissions(d_home, d_away, confidence, p_dead, side, shape_z, touch)
 
     control = control_vote(d_home, d_away, confidence, config.CONTROL_RADIUS,
                            config.CONTROL_CERTAINTY)
     home_control, away_control = control > 0.5, control < 0.5
+    if touch is not None:
+        home_control |= touch > 0
+        away_control |= touch < 0
 
     labels = np.full(len(ball), "X", dtype="<U1")
     for first, stop in blocks:

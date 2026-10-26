@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from validation import degrade  # noqa: E402
+from validation import degrade, tags_sim  # noqa: E402
 from validation.idsse import fold_touches  # noqa: E402
 from validation.metrica import ground_truth  # noqa: E402
 from validation.run import blocks_of  # noqa: E402
@@ -67,6 +67,29 @@ class IdsseTest(unittest.TestCase):
         self.assertEqual(blocks_of(gt), [(2, 8)])
 
 
+class TagsSimTest(unittest.TestCase):
+    def gt(self):
+        return np.array(list("X" * 50 + "H" * 500 + "D" * 200 + "A" * 600 + "H" * 400 + "X" * 50))
+
+    def test_team_side_quality_moves_with_its_knobs(self):
+        gt = self.gt()
+        perfect = tags_sim.team_side(gt, np.random.default_rng(0), keep=1.0, flip=0.0,
+                                     overrun_share=0.0)
+        cover, right = tags_sim.quality(gt, perfect)
+        self.assertGreater(cover, 0.8)
+        self.assertGreater(right, 0.95)
+        flipped = tags_sim.team_side(gt, np.random.default_rng(0), keep=1.0, flip=1.0,
+                                     overrun_share=0.0)
+        self.assertLess(tags_sim.quality(gt, flipped)[1], 0.05)
+        self.assertTrue((perfect[gt == "X"] == 0).all())
+
+    def test_set_piece_tags_start_before_restarts(self):
+        gt = self.gt()
+        starts = tags_sim.set_piece_starts(gt, np.random.default_rng(3))
+        self.assertTrue(all(0 <= s < len(gt) for s in starts))
+        self.assertEqual(starts, sorted(starts))
+
+
 class DegradeTest(unittest.TestCase):
     def test_blackouts_reach_target_and_are_seeded(self):
         ball = np.zeros((50000, 2), dtype=np.float32)
@@ -83,6 +106,15 @@ class DegradeTest(unittest.TestCase):
         self.assertAlmostEqual(float(out.std()), 0.7, delta=0.1)
         step = np.abs(np.diff(out[:, 0])).mean()
         self.assertLess(step, 0.4)                       # independent noise would give ~0.79
+
+    def test_ball_smoothing_keeps_gaps_and_softens_a_kick(self):
+        ball = np.zeros((200, 2), dtype=np.float32)
+        ball[100:, 0] = np.arange(100) * 0.6               # kicked at frame 100
+        ball[150:160] = np.nan
+        out = degrade.ball_smoothing(ball, frames=5)
+        self.assertTrue(np.isnan(out[150:160]).all() and not np.isnan(out[:150]).any())
+        v = np.diff(out[:150, 0])
+        self.assertLess(v[99] - v[98], (ball[101, 0] - ball[100, 0]) - 0)   # change spread out
 
     def test_player_dropouts_share(self):
         players = np.zeros((40000, 10, 2), dtype=np.float32)

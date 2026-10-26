@@ -48,11 +48,14 @@ STILL_FRAMES = 25
 W_STILL = 1.5
 
 # Smart Tagging SET PIECES. The tag is a fixed-length window (35 s, 5 s for kick-offs), so only its
-# start says anything. The published first-half kick-off (frame 11185) falls 3.5 s after the start
-# of its tag, so the restart is assumed to be within a few seconds of the tag start.
+# start says anything. On BAR-ATH our predicted restarts (made without the tags) come a median
+# 5.6 s after a tag starts (validation/tag_quality.py). Tested with synthetic tags of that quality
+# (validation/tags_sim.py): the term never helped -- at best level with off, even with no false
+# tags at all, because speed and the ball already find the stoppages -- and with the ~30% of tags
+# that sit near no stoppage it cost up to 0.02 spellF1. So it is off.
 SET_PIECE_BEFORE_S = 5.0
 SET_PIECE_AFTER_S = 5.0
-W_SET_PIECE = 1.5
+W_SET_PIECE = 0.0
 
 # The ball also vanishes for long spells in open play (DATA.md), so a missing ball is weak evidence.
 W_MISSING = 0.3
@@ -102,6 +105,23 @@ SWITCH_DEAD = 8.0            # validated: 4 and 8 level, 16 worse
 # 0 turns it off. Validated: +0.01 spellF1 on every game over 0; 3 s and 5 s level.
 SNAP_MAX_S = 3.0
 
+# --- Touches (features.ball_touches). ---
+
+# A pass struck or a ball received changes the ball's velocity sharply; in open play between
+# touches it hardly changes. The ATD smooths the ball, so the change is measured over +/- 10
+# frames: there BAR-ATH shows as many touches per minute of play as the degraded validation games
+# (16.0 vs 15.5 at 4 m/s) and the toucher is the team in possession on 85-86% of them. The
+# toucher is the nearest player within TOUCH_RADIUS -- 3 m, because after 0.4 s of smoothing a
+# struck ball is already that far from the foot. W_TOUCH is the log-odds a touch adds for the
+# toucher's team; 0 turns touches off.
+# Validated on the dev games: spellF1 0.398 off -> 0.419 (W 12, 3 m, 4 m/s); 12, 16 and 24 level,
+# radius 3 m best (1.5 m 0.405, 4 m 0.417, 5 m 0.413), 3 and 4 m/s level, one setting chosen in
+# every leave-one-game-out fold.
+TOUCH_JUMP = 4.0
+TOUCH_RADIUS = 3.0
+TOUCH_LAG = 10
+W_TOUCH = 12.0
+
 # --- Smart Tagging hint where the ball is not seen (tagging.team_side). ---
 
 # The tags are phases, accurate to about a second, and several codes are fixed-length windows
@@ -109,19 +129,22 @@ SNAP_MAX_S = 3.0
 # tag is worth little; what counts is a tag that keeps disagreeing with the current team. Asking for
 # TAG_SWITCH_S of uncontradicted disagreement inside a ball blackout before switching sets the
 # per-frame certainty: each tagged frame is worth SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS).
+# Checked with synthetic tags of BAR-ATH's estimated quality (validation/tags_sim.py, ~85% right
+# where they cover ~67% of play): the hint is worth +0.002-0.004 spellF1; 1.5, 2.5 and 5 s level.
 TAG_SWITCH_S = 5.0
 TAG_CERTAINTY = 1.0 / (1.0 + math.exp(-SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS)))
 
 # --- Team-shape hint where the ball is not seen (shape.py). ---
 
-# Logistic coefficients for (territory m, width m, direction m/s), fitted on the ten validation
-# games' alive frames by `python validation/train_shape.py` (73-84% of frames right per game).
+# Logistic coefficients for (territory m, width m, direction m/s), fitted on the seven dev
+# validation games' alive frames by `python validation/train_shape.py` (73-83% of frames right
+# per game; fitting on all ten instead gives (-0.010, 0.363, 0.458), i.e. the same model).
 # Territory ends up worthless once width and direction are in; width carries the most.
 # Per frame they are calibrated probabilities, but neighbouring frames repeat the same
 # information, so in the Viterbi the log-odds are multiplied by SHAPE_WEIGHT; 0 turns it off.
 # Validated leave-one-game-out (coefficients refitted without the scored game), spellF1 over the
 # ten games: off 0.435, 0.05 0.448, 0.1 0.449, 0.2 0.445, 0.4 0.437 -- the same on both datasets.
-SHAPE_COEF = (-0.0103, 0.3632, 0.4581)
+SHAPE_COEF = (-0.0088, 0.3527, 0.4586)
 SHAPE_WEIGHT = 0.1
 
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`
