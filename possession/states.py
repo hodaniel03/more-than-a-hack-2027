@@ -31,3 +31,111 @@ def viterbi(log_emission, switch_home_away, switch_dead):
     for t in range(n - 1, 0, -1):
         path[t - 1] = back[t, path[t]]
     return path
+
+
+def snap_handovers(path, home_control, away_control, max_shift):
+    """Move each direct H<->A switch to where the new team takes control.
+
+    Between the old team's last touch and the new team's first one -- a pass in flight, a loose
+    ball -- nobody is in control, so the Viterbi path may switch anywhere in that stretch. The
+    possession rules say the ball stays with the last team until the other one controls it, so
+    within +/- `max_shift` frames (and never past the neighbouring switches) the switch goes to the
+    split that agrees best with the control evidence, the latest such split on a tie.
+    """
+    path = path.copy()
+    n = len(path)
+    change = np.flatnonzero(path[1:] != path[:-1]) + 1
+    bounds = np.concatenate(([0], change, [n]))
+    ctrl = {H: home_control, A: away_control}
+    left = 0                                           # where the current run really starts
+    for k in range(1, len(bounds) - 1):
+        i = bounds[k]
+        old, new = path[i - 1], path[i]
+        if D in (old, new):
+            left = i
+            continue
+        a = max(left, i - max_shift)
+        b = min(bounds[k + 1], i + max_shift)
+        left = i
+        old_c = np.concatenate(([0], np.cumsum(ctrl[old][a:b])))
+        new_c = np.concatenate(([0], np.cumsum(ctrl[new][a:b])))
+        agree = old_c + (new_c[-1] - new_c)            # old before split s, new from s on
+        best = np.flatnonzero(agree == agree.max())
+        best = best[(best > 0) & (best < b - a)]       # keep at least one frame of each
+        if len(best):
+            left = a + best[-1]
+            path[a:left] = old
+            path[left:b] = new
+    return path
+
+
+def drop_short_runs(path, state, min_len):
+    """Replace runs of `state` shorter than `min_len` with the label before them (after, at the
+    start). A run touching either end of the path is kept: it may be cut off, not short."""
+    path = path.copy()
+    n = len(path)
+    i = 0
+    while i < n:
+        if path[i] != state:
+            i += 1
+            continue
+        j = i
+        while j < n and path[j] == state:
+            j += 1
+        if j - i < min_len and i > 0 and j < n:
+            path[i:j] = path[i - 1]
+        i = j
+    return path
+
+
+def viterbi_fast(log_emission, switch_home_away, switch_dead):
+    """The same decoder as viterbi(), written with plain floats: about ten times faster, which
+    matters when the validation games are decoded many times. Ties go to staying."""
+    n = len(log_emission)
+    if n == 0:
+        return np.zeros(0, dtype=np.int8)
+    eh, ea, ed = (log_emission[:, k].tolist() for k in (H, A, D))
+    c_ha, c_d = float(switch_home_away), float(switch_dead)
+    sh, sa, sd = eh[0], ea[0], ed[0]
+    bh, ba, bd = bytearray(n), bytearray(n), bytearray(n)
+    for t in range(1, n):
+        a = sa - c_ha
+        d = sd - c_d
+        if sh >= a and sh >= d:
+            nh = sh
+            bh[t] = H
+        elif a >= d:
+            nh = a
+            bh[t] = A
+        else:
+            nh = d
+            bh[t] = D
+        h = sh - c_ha
+        if sa >= h and sa >= d:
+            na = sa
+            ba[t] = A
+        elif h >= d:
+            na = h
+            ba[t] = H
+        else:
+            na = d
+            ba[t] = D
+        h = sh - c_d
+        a = sa - c_d
+        if sd >= h and sd >= a:
+            nd = sd
+            bd[t] = D
+        elif h >= a:
+            nd = h
+            bd[t] = H
+        else:
+            nd = a
+            bd[t] = A
+        sh, sa, sd = nh + eh[t], na + ea[t], nd + ed[t]
+    path = np.zeros(n, dtype=np.int8)
+    state = H if (sh >= sa and sh >= sd) else (A if sa >= sd else D)
+    back = (bh, ba, bd)
+    for t in range(n - 1, -1, -1):
+        path[t] = state
+        state = back[state][t]
+    return path

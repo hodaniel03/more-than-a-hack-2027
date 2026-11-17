@@ -32,6 +32,8 @@ Frist: **17. november 2026**. Roller: P1 = Data og ball, P2 = Modell, P3 = Dødb
 - [ ] Se på noen sekvenser i videoen for å forstå data og feature-idéer (lov, så lenge det ikke blir etiketter eller frame-spesifikke regler).
 - [ ] Forstå at 46 sporplasser ikke er 22 spillere, og at plasser kan bytte identitet.
 
+# 4 majo må lære GIT
+
 ## 3. Baseline og første fil
 - [ ] Kjør `python run_pipeline.py --team <navn>` og få en gyldig fil.
 - [ ] Sammenlign mot baselinene på de 5 offentlige minuttene (kun sanity-sjekk).
