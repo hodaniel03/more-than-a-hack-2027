@@ -204,6 +204,13 @@ class ShapeTest(unittest.TestCase):
 
 
 class PipelineTest(unittest.TestCase):
+    # The rule-based model, which needs no player speeds; the learned one is in test_learned.py.
+    def setUp(self):
+        self.model, config.MODEL = config.MODEL, "rules"
+
+    def tearDown(self):
+        config.MODEL = self.model
+
     def test_labels_cover_every_frame_and_respect_graded_blocks(self):
         n = GAMES[GAME]["n_video_frames"]
         ball = np.full((n, 2), 34.0, dtype=np.float32)

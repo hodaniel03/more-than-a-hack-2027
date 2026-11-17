@@ -3,10 +3,11 @@
 import numpy as np
 
 from games import GAME, GAMES, half_video_blocks
-from . import config, shape
-from .deadball import dead_probability
+from . import config, learned, shape
+from .deadball import ball_outside, dead_probability
 from .features import ball_touches, control_vote, interpolate_ball, team_distances
-from .states import A, D, H, LETTERS, drop_short_runs, snap_handovers, viterbi
+from .states import (A, D, H, LETTERS, drop_short_runs, snap_handovers, viterbi,
+                     viterbi_fast)
 from .tagging import set_piece_starts, tag_side
 from .tracking import load_tracking
 
@@ -68,6 +69,9 @@ def predict_blocks(ball, players, team, blocks, pitch, speed=None, set_piece_sta
         # Slots the tracker gives no speed for include two parked at a fixed spot near each goal;
         # left in, they "control" every ball that comes near that spot.
         players = np.where(np.isnan(speed)[:, :, None], np.nan, players)
+    if config.MODEL == "learned":
+        return predict_blocks_learned(ball, players, team, blocks, pitch, speed, side,
+                                      forced_dead)
     filled, confidence = interpolate_ball(ball, config.MAX_BALL_GAP)
     d_home, d_away = team_distances(filled, players, team)
     p_dead = dead_probability(ball, speed, set_piece_starts, pitch, forced_dead)
@@ -96,6 +100,46 @@ def predict_blocks(ball, players, team, blocks, pitch, speed=None, set_piece_sta
         if config.SNAP_MAX_S > 0:
             path = snap_handovers(path, home_control[first:stop], away_control[first:stop],
                                   int(config.SNAP_MAX_S * config.FPS))
+        labels[first:stop] = LETTERS[path]
+    return labels
+
+
+_MODELS = {}
+
+
+def predict_blocks_learned(ball, players, team, blocks, pitch, speed, side=None,
+                           forced_dead=()):
+    """predict_blocks() with the learned evidence: P(dead) and P(home | alive) from the stored
+    trees, a Viterbi against flicker, and stoppages too short to be real dropped."""
+    if speed is None:
+        raise ValueError("the learned model needs player speeds")
+    if "models" not in _MODELS:
+        _MODELS["models"] = learned.load_model()
+    p_dead, p_home = learned.probabilities(_MODELS["models"], ball, players, team, speed, pitch,
+                                           blocks)
+    eps = 1e-4
+    z_dead = np.log(np.clip(p_dead, eps, 1 - eps) / np.clip(1 - p_dead, eps, 1 - eps))
+    z_dead += config.LEARNED_W_OUTSIDE * ball_outside(ball, pitch)
+    p_dead = 1.0 / (1.0 + np.exp(-z_dead))
+    for first, stop in forced_dead:
+        p_dead[first:stop] = 1.0
+    p_dead = np.clip(p_dead, eps, 1 - eps)
+    p_home = np.clip(p_home, eps, 1 - eps)
+    if side is not None and config.LEARNED_W_TAG > 0:
+        # Smart Tagging phases as a weak hint, only where the ball is not seen (see config).
+        blind = interpolate_ball(ball, config.MAX_BALL_GAP)[1] == 0
+        z_home = np.log(p_home / (1 - p_home)) + config.LEARNED_W_TAG * side * blind
+        p_home = np.clip(1.0 / (1.0 + np.exp(-z_home)), eps, 1 - eps)
+    emission = np.empty((len(ball), 3), dtype=np.float64)
+    emission[:, H] = np.log(1 - p_dead) + np.log(p_home)
+    emission[:, A] = np.log(1 - p_dead) + np.log(1 - p_home)
+    emission[:, D] = np.log(p_dead)
+
+    labels = np.full(len(ball), "X", dtype="<U1")
+    for first, stop in blocks:
+        path = viterbi_fast(emission[first:stop], config.LEARNED_SWITCH_HOME_AWAY,
+                            config.LEARNED_SWITCH_DEAD)
+        path = drop_short_runs(path, D, int(config.LEARNED_MIN_DEAD_S * config.FPS))
         labels[first:stop] = LETTERS[path]
     return labels
 

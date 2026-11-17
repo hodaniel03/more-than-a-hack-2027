@@ -147,6 +147,34 @@ TAG_CERTAINTY = 1.0 / (1.0 + math.exp(-SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS)))
 SHAPE_COEF = (-0.0088, 0.3527, 0.4586)
 SHAPE_WEIGHT = 0.1
 
+# --- Which model labels the match (pipeline.predict_blocks). ---
+
+# "learned": gradient-boosted trees trained on other games (learned.py, models/learned.npz) give
+# P(dead) and P(home | alive) per frame, and the Viterbi only removes flicker.
+# "rules": the hand-set evidence above.
+# Validated on other games with ATD-like inputs (spellF1): leave-one-game-out on the seven dev
+# games learned 0.61, rules 0.42; on the three locked test games learned 0.64, rules 0.44.
+MODEL = "learned"
+
+# Decoder for the learned probabilities. The trees already see +/- 20 s of context, so the switch
+# costs only have to pay for single-frame flicker; validated on the dev games: H<->A cost 6, 8
+# and 12 are level (0.615 / 0.617 / 0.612), 2 is worse (0.598); dead cost 4, 8 and 12 level.
+LEARNED_SWITCH_HOME_AWAY = 8.0
+LEARNED_SWITCH_DEAD = 8.0
+# Stoppages shorter than this are dropped. 0, 2 and 3 s are level on the dev games (0.623 / 0.622
+# / 0.621), 5 s costs 0.006 and 8 s 0.02; 2 s because no real restart is quicker than that.
+LEARNED_MIN_DEAD_S = 2.0
+# A ball *seen* beyond the lines is out of play (Law 9). The validation games never show the ball
+# outside the pitch, so the trees cannot learn it; it is added as log-odds on those frames only.
+LEARNED_W_OUTSIDE = 4.0
+
+# Smart Tagging phase hint (tagging.team_side), in log-odds for the tagged team, on frames where
+# the ball is not seen. With synthetic tags of BAR-ATH's estimated quality (validation/tags_sim.py)
+# 0.5, 1 and 2 are worth +0.007 / +0.009 / +0.008 spellF1 on the dev games: small, inside the
+# noise, but never negative. On BAR-ATH itself the tags agree with the tag-free prediction on 80%
+# of ball-seen frames, which puts their accuracy near the 85% the synthetic tags assume.
+LEARNED_W_TAG = 1.0
+
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`
 # (FAQ.md). Source: starter/load_smart_tagging.py KICKOFF_VIDEO_FRAMES.
 SECOND_HALF_KICKOFF = 113742

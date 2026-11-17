@@ -1,0 +1,6 @@
+# Only to retrain models/learned.npz from the public games (validation/train_learned.py) and to
+# build the IDSSE cache. Not needed to reproduce the submission: run_pipeline.py needs numpy only.
+# The committed model was trained with Python 3.13 and exactly these versions.
+numpy==2.5.4
+scikit-learn==1.9.1
+kloppy==3.18.0
