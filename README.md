@@ -2,7 +2,7 @@
 
 > **Team submission.** This fork holds our Phase 1 entry. To regenerate the submission file:
 > `pip install -r requirements-pipeline.txt`, unpack the data bundle into `data/` (see
-> [DATA.md](DATA.md)), then `python run_pipeline.py --team TEAM_NAME`. The method is described in
+> [DATA.md](DATA.md)), then `python run_pipeline.py --team ghosts`. The method is described in
 > [docs/technical_document.md](docs/technical_document.md).
 
 **Organised by [Metrica Sports](https://metrica-sports.com), [FC Barcelona](https://www.fcbarcelona.com)
