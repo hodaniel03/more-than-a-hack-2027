@@ -1,10 +1,10 @@
-# TEAM_NAME — technical document
+# ghosts — technical document
 
 *More than a Hack 2027, Phase 1: frame-level ball possession (BAR-ATH).*
 
 ## 1. Result
 
-- Submission: `TEAM_NAME.csv`, 199,319 rows, passes `evaluation/validate_submission.py`.
+- Submission: `ghosts.csv`, 199,319 rows, passes `evaluation/validate_submission.py`.
 - It reports 289 possessions of mean 13.0 s; `D` on 40.7% of graded frames; no `X`
   on a graded frame.
 - On other games, with tracking degraded to look like the provided ATD (section 4), the model
@@ -189,7 +189,7 @@ iterations, 31 leaves, learning rate 0.08, at least 400 samples per leaf, every 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-pipeline.txt
 # data bundle in ./data (or export MTAH_DATA_DIR=...), see DATA.md
-python run_pipeline.py --team TEAM_NAME      # writes submissions/TEAM_NAME.csv and validates it
+python run_pipeline.py --team ghosts      # writes submissions/ghosts.csv and validates it
 python -m unittest discover tests
 ```
 
