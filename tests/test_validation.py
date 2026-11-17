@@ -1,0 +1,128 @@
+"""The validation tooling on synthetic data -- no download needed:  python -m unittest discover tests"""
+
+import os
+import sys
+import unittest
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from validation import degrade, tags_sim  # noqa: E402
+from validation.idsse import fold_touches  # noqa: E402
+from validation.metrica import ground_truth  # noqa: E402
+from validation.run import blocks_of  # noqa: E402
+
+
+def ev(team, kind, start, end=None, subtype="", period=1):
+    return {"team": team, "type": kind, "subtype": subtype, "period": period,
+            "start": start, "end": start if end is None else end}
+
+
+class GroundTruthTest(unittest.TestCase):
+    def test_possession_stoppage_and_restart(self):
+        events = [
+            ev("H", "SET PIECE", 10, subtype="KICK OFF"),
+            ev("H", "PASS", 10, 20),
+            ev("A", "CHALLENGE", 25, subtype="AERIAL-WON"),   # a won duel is not control
+            ev("H", "PASS", 30, 40),
+            ev("H", "BALL LOST", 40, subtype="INTERCEPTION"),
+            ev("A", "RECOVERY", 42, subtype="INTERCEPTION"),
+            ev("A", "BALL OUT", 50, 60),                     # crosses the line at 60
+            ev("A", "CARD", 65, subtype="YELLOW"),           # off the ball, ignored
+            ev("H", "SET PIECE", 70, subtype="THROW IN"),
+            ev("H", "PASS", 70, 80),
+        ]
+        gt = ground_truth(events, 100)
+        self.assertTrue((gt[:10] == "X").all())             # before kick-off
+        self.assertTrue((gt[10:42] == "H").all())           # duel at 25 changes nothing
+        self.assertTrue((gt[42:60] == "A").all())           # recovery hands it over
+        self.assertTrue((gt[60:70] == "D").all())           # out until the throw-in
+        self.assertTrue((gt[70:81] == "H").all())
+        self.assertTrue((gt[81:] == "X").all())             # after the last event
+
+    def test_foul_without_logged_stop_is_dead_from_the_foul(self):
+        events = [
+            ev("H", "SET PIECE", 0, subtype="KICK OFF"),
+            ev("H", "PASS", 0, 10),
+            ev("A", "CHALLENGE", 15, subtype="TACKLE-FAULT-LOST"),
+            ev("H", "SET PIECE", 40, subtype="FREE KICK"),
+            ev("H", "PASS", 40, 50),
+        ]
+        gt = ground_truth(events, 60)
+        self.assertTrue((gt[15:40] == "D").all())
+        self.assertTrue((gt[40:51] == "H").all())
+
+
+class IdsseTest(unittest.TestCase):
+    def test_fold_touches_only_folds_short_spells_between_the_same_team(self):
+        gt = np.array(list("HHHHAHHHH" "AAAAAHHAAAA" "HHHDDAD"))
+        out = fold_touches(gt, 3)
+        self.assertEqual("".join(out), "HHHHHHHHH" "AAAAAAAAAAA" "HHHDDAD")
+
+    def test_blocks_split_at_period_change(self):
+        gt = np.array(list("XXHHHHHHXX"))
+        periods = np.array([1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
+        self.assertEqual(blocks_of(gt, periods), [(2, 4), (4, 8)])
+        self.assertEqual(blocks_of(gt), [(2, 8)])
+
+
+class TagsSimTest(unittest.TestCase):
+    def gt(self):
+        return np.array(list("X" * 50 + "H" * 500 + "D" * 200 + "A" * 600 + "H" * 400 + "X" * 50))
+
+    def test_team_side_quality_moves_with_its_knobs(self):
+        gt = self.gt()
+        perfect = tags_sim.team_side(gt, np.random.default_rng(0), keep=1.0, flip=0.0,
+                                     overrun_share=0.0)
+        cover, right = tags_sim.quality(gt, perfect)
+        self.assertGreater(cover, 0.8)
+        self.assertGreater(right, 0.95)
+        flipped = tags_sim.team_side(gt, np.random.default_rng(0), keep=1.0, flip=1.0,
+                                     overrun_share=0.0)
+        self.assertLess(tags_sim.quality(gt, flipped)[1], 0.05)
+        self.assertTrue((perfect[gt == "X"] == 0).all())
+
+    def test_set_piece_tags_start_before_restarts(self):
+        gt = self.gt()
+        starts = tags_sim.set_piece_starts(gt, np.random.default_rng(3))
+        self.assertTrue(all(0 <= s < len(gt) for s in starts))
+        self.assertEqual(starts, sorted(starts))
+
+
+class DegradeTest(unittest.TestCase):
+    def test_blackouts_reach_target_and_are_seeded(self):
+        ball = np.zeros((50000, 2), dtype=np.float32)
+        alive = np.ones(50000, dtype=bool)
+        a = degrade.ball_blackouts(ball, alive, np.random.default_rng(0), target=0.25)
+        b = degrade.ball_blackouts(ball, alive, np.random.default_rng(0), target=0.25)
+        missing = np.isnan(a[:, 0]).mean()
+        self.assertTrue(0.25 <= missing < 0.35)
+        np.testing.assert_array_equal(np.isnan(a), np.isnan(b))
+
+    def test_ball_error_has_the_set_size_and_is_smooth(self):
+        ball = np.zeros((20000, 2), dtype=np.float32)
+        out = degrade.ball_error(ball, np.random.default_rng(2), sigma=0.7, tau_s=0.4)
+        self.assertAlmostEqual(float(out.std()), 0.7, delta=0.1)
+        step = np.abs(np.diff(out[:, 0])).mean()
+        self.assertLess(step, 0.4)                       # independent noise would give ~0.79
+
+    def test_ball_smoothing_keeps_gaps_and_softens_a_kick(self):
+        ball = np.zeros((200, 2), dtype=np.float32)
+        ball[100:, 0] = np.arange(100) * 0.6               # kicked at frame 100
+        ball[150:160] = np.nan
+        out = degrade.ball_smoothing(ball, frames=5)
+        self.assertTrue(np.isnan(out[150:160]).all() and not np.isnan(out[:150]).any())
+        v = np.diff(out[:150, 0])
+        self.assertLess(v[99] - v[98], (ball[101, 0] - ball[100, 0]) - 0)   # change spread out
+
+    def test_player_dropouts_share(self):
+        players = np.zeros((40000, 10, 2), dtype=np.float32)
+        speed = np.zeros((40000, 10), dtype=np.float32)
+        p, s = degrade.player_dropouts(players, speed, np.random.default_rng(1), share=0.14)
+        self.assertAlmostEqual(float(np.isnan(s).mean()), 0.14, delta=0.04)
+        np.testing.assert_array_equal(np.isnan(p[:, :, 0]), np.isnan(s))
+
+
+if __name__ == "__main__":
+    unittest.main()

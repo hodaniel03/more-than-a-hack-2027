@@ -1,24 +1,179 @@
 """Every tunable number in one place.
 
 Rule from RULES.md: none of these may be tuned on the public 5 minutes. Choose them from football
-reasoning or from other games, and write the reason next to the value. The values below are
-starting points, not results.
+reasoning or from other games, and write the reason next to the value.
+
+"Validated" below means checked on other games, degraded to look like the provided ATD
+(python validation/run.py, validation/sweep.py; see validation/): Metrica's three public sample
+games (ground truth from their event data) and the seven IDSSE Bundesliga matches (ground truth
+from the official DFL ball status / possession flags). The two datasets define possession a little
+differently -- the DFL flag is more fragmented -- so where they disagree the value is the one that
+is closest to the best on *both*, not the best on either.
 """
+
+import math
 
 # Ball gaps up to this many frames are bridged by linear interpolation (25 frames = 1 s).
 MAX_BALL_GAP = 25
 
-# Ball gaps longer than this are treated as "probably dead" in the v0 dead-ball prior.
-DEAD_GAP = 75
-DEAD_PROB_WHEN_LOST = 0.8
+FPS = 25
 
-# Metres over which the home/away distance difference saturates into a confident vote.
-DISTANCE_SCALE = 3.0
+# --- Dead-ball detector (deadball.py). Log-odds units: +1 is roughly "2.7x more likely dead". ---
+
+# Base rate. Effective playing time in a top-flight match is about 55 of ~100 minutes, so the ball
+# is dead a bit under half the time: log(0.4 / 0.6).
+DEAD_PRIOR_LOGIT = -0.4
+
+# Collective speed. Human walking pace is ~1.4 m/s; outfield players cover ~10-11 km per 90 min,
+# i.e. ~2 m/s on average in play, while at a stoppage most of them walk or stand.
+WALK_SPEED = 1.5
+SPEED_SCALE = 0.4            # m/s per unit of evidence, clipped at +/-2 units
+# Validated: on Metrica 0.5 beat 0.75, 1.5 and 3 on every game (spellF1 0.444 / 0.430 / 0.384 /
+# 0.354), also with the missing-ball term off; on IDSSE 0.25 and 0.5 are level and 1.0 is worse.
+# At 0 the detector loses most stoppages, so speed is needed -- but heavily weighted it calls slow
+# build-up play dead and splits the possession.
+W_SPEED = 0.5
+SPEED_WINDOW = 25            # +/- 1 s: a stoppage is a team-wide slowdown, not one frame
+MIN_PLAYERS_FOR_SPEED = 8    # fewer tracked players than this and the median is not a team
+
+# Ball out. Law 9: the whole ball must cross the line. 1 m covers the ball's radius plus the
+# position noise of automatic tracking, so a ball on the line is not called out.
+OUT_MARGIN = 1.0
+W_OUTSIDE = 4.0
+OUT_LATCH_FRAMES = 60 * 25   # longest a single out-of-play spell plausibly lasts
+
+# Ball standing still: a placed ball. In play a ball is rarely below walking speed for a second.
+STILL_SPEED = 0.5
+STILL_FRAMES = 25
+W_STILL = 1.5
+
+# Smart Tagging SET PIECES. The tag is a fixed-length window (35 s, 5 s for kick-offs), so only its
+# start says anything. On BAR-ATH our predicted restarts (made without the tags) come a median
+# 5.6 s after a tag starts (validation/tag_quality.py). Tested with synthetic tags of that quality
+# (validation/tags_sim.py): the term never helped -- at best level with off, even with no false
+# tags at all, because speed and the ball already find the stoppages -- and with the ~30% of tags
+# that sit near no stoppage it cost up to 0.02 spellF1. So it is off.
+SET_PIECE_BEFORE_S = 5.0
+SET_PIECE_AFTER_S = 5.0
+W_SET_PIECE = 0.0
+
+# The ball also vanishes for long spells in open play (DATA.md), so a missing ball is weak evidence.
+W_MISSING = 0.3
+
+# Shortest stoppage that is real: even a quick throw-in needs the ball fetched and taken from the
+# line, which takes a few seconds. Shorter `D` runs are noise and would split a possession in two.
+# Validated: on Metrica 5 s beat 0, 2, 3, 7 and 10 (their stoppages have a median of 13-19 s); on
+# IDSSE 3 s and 5 s are level.
+# Enforcing it inside the Viterbi instead of filling short runs afterwards was tried and scored
+# lower on all three games.
+MIN_DEAD_S = 5.0
+
+# --- Team in control (features.control_vote). ---
+
+# A player in control has the ball within a stride; automatic tracking places a player by the
+# centre of the body and adds about half a metre of noise on top. Validated together with
+# MIN_CONTROL_S below. Note the Metrica sample ball sits on the controlling player's feet; without
+# the ATD's position error added (validation/degrade.py) ever smaller radii look better there,
+# which would not carry over to the ATD.
+CONTROL_RADIUS = 1.25
+# How often an uncontested "my player is next to the ball" frame really is that team's ball.
+# Tracking noise and identity swaps make roughly one frame in ten wrong.
+CONTROL_CERTAINTY = 0.9
+
+# A change of possession needs *controlled* possession (CHALLENGE.md): a touch, a deflection or a
+# won header is not one. The new team's clean control needed before switching sets the H<->A cost:
+# each frame of it is worth log(0.9 / 0.1) in the Viterbi.
+#
+# Validated with CONTROL_RADIUS over all ten games (spellF1, IDSSE / Metrica):
+#     0.15 s, 1.25 m   0.433 / 0.441    <- within 0.011 of the best on both
+#     0.10 s, 1.00 m   0.444 / 0.431       best on IDSSE, 0.019 short on Metrica
+#     0.20 s, 1.50 m   0.411 / 0.451       best on Metrica, 0.034 short on IDSSE
+#     0.30 s, 1.50 m   0.398 / 0.448       the previous setting
+# The DFL flag changes hands more often than the Metrica events do, so it rewards quicker
+# switching; a reception and one touch is about 0.15-0.3 s.
+#
+# Note the ceiling: H -> D -> A costs 2 * SWITCH_DEAD, so a switch never costs more than that
+# however large this is (at SWITCH_DEAD = 8, anything above ~0.3 s behaves the same).
+MIN_CONTROL_S = 0.15
 
 # Viterbi switch costs (log-probability units). Larger = fewer, longer possessions.
-# spellF1 punishes flicker far more than macroF1 does, so these matter more than any feature.
-SWITCH_HOME_AWAY = 12.0
-SWITCH_DEAD = 8.0
+SWITCH_HOME_AWAY = MIN_CONTROL_S * FPS * math.log(CONTROL_CERTAINTY / (1 - CONTROL_CERTAINTY))
+SWITCH_DEAD = 8.0            # validated: 4 and 8 level, 16 worse
+
+# A hand-over is moved to where the new team takes control (states.snap_handovers), searching at
+# most this far either side: a long pass or a clearance is in the air for two to three seconds.
+# 0 turns it off. Validated: +0.01 spellF1 on every game over 0; 3 s and 5 s level.
+SNAP_MAX_S = 3.0
+
+# --- Touches (features.ball_touches). ---
+
+# A pass struck or a ball received changes the ball's velocity sharply; in open play between
+# touches it hardly changes. The ATD smooths the ball, so the change is measured over +/- 10
+# frames: there BAR-ATH shows as many touches per minute of play as the degraded validation games
+# (16.0 vs 15.5 at 4 m/s) and the toucher is the team in possession on 85-86% of them. The
+# toucher is the nearest player within TOUCH_RADIUS -- 3 m, because after 0.4 s of smoothing a
+# struck ball is already that far from the foot. W_TOUCH is the log-odds a touch adds for the
+# toucher's team; 0 turns touches off.
+# Validated on the dev games: spellF1 0.398 off -> 0.419 (W 12, 3 m, 4 m/s); 12, 16 and 24 level,
+# radius 3 m best (1.5 m 0.405, 4 m 0.417, 5 m 0.413), 3 and 4 m/s level, one setting chosen in
+# every leave-one-game-out fold.
+TOUCH_JUMP = 4.0
+TOUCH_RADIUS = 3.0
+TOUCH_LAG = 10
+W_TOUCH = 12.0
+
+# --- Smart Tagging hint where the ball is not seen (tagging.team_side). ---
+
+# The tags are phases, accurate to about a second, and several codes are fixed-length windows
+# (CREATING CHANCES is always 30 s) that run on past the end of a possession. So a single frame of
+# tag is worth little; what counts is a tag that keeps disagreeing with the current team. Asking for
+# TAG_SWITCH_S of uncontradicted disagreement inside a ball blackout before switching sets the
+# per-frame certainty: each tagged frame is worth SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS).
+# Checked with synthetic tags of BAR-ATH's estimated quality (validation/tags_sim.py, ~85% right
+# where they cover ~67% of play): the hint is worth +0.002-0.004 spellF1; 1.5, 2.5 and 5 s level.
+TAG_SWITCH_S = 5.0
+TAG_CERTAINTY = 1.0 / (1.0 + math.exp(-SWITCH_HOME_AWAY / (TAG_SWITCH_S * FPS)))
+
+# --- Team-shape hint where the ball is not seen (shape.py). ---
+
+# Logistic coefficients for (territory m, width m, direction m/s), fitted on the seven dev
+# validation games' alive frames by `python validation/train_shape.py` (73-83% of frames right
+# per game; fitting on all ten instead gives (-0.010, 0.363, 0.458), i.e. the same model).
+# Territory ends up worthless once width and direction are in; width carries the most.
+# Per frame they are calibrated probabilities, but neighbouring frames repeat the same
+# information, so in the Viterbi the log-odds are multiplied by SHAPE_WEIGHT; 0 turns it off.
+# Validated leave-one-game-out (coefficients refitted without the scored game), spellF1 over the
+# ten games: off 0.435, 0.05 0.448, 0.1 0.449, 0.2 0.445, 0.4 0.437 -- the same on both datasets.
+SHAPE_COEF = (-0.0088, 0.3527, 0.4586)
+SHAPE_WEIGHT = 0.1
+
+# --- Which model labels the match (pipeline.predict_blocks). ---
+
+# "learned": gradient-boosted trees trained on other games (learned.py, models/learned.npz) give
+# P(dead) and P(home | alive) per frame, and the Viterbi only removes flicker.
+# "rules": the hand-set evidence above.
+# Validated on other games with ATD-like inputs (spellF1): leave-one-game-out on the seven dev
+# games learned 0.61, rules 0.42; on the three locked test games learned 0.64, rules 0.44.
+MODEL = "learned"
+
+# Decoder for the learned probabilities. The trees already see +/- 20 s of context, so the switch
+# costs only have to pay for single-frame flicker; validated on the dev games: H<->A cost 6, 8
+# and 12 are level (0.615 / 0.617 / 0.612), 2 is worse (0.598); dead cost 4, 8 and 12 level.
+LEARNED_SWITCH_HOME_AWAY = 8.0
+LEARNED_SWITCH_DEAD = 8.0
+# Stoppages shorter than this are dropped. 0, 2 and 3 s are level on the dev games (0.623 / 0.622
+# / 0.621), 5 s costs 0.006 and 8 s 0.02; 2 s because no real restart is quicker than that.
+LEARNED_MIN_DEAD_S = 2.0
+# A ball *seen* beyond the lines is out of play (Law 9). The validation games never show the ball
+# outside the pitch, so the trees cannot learn it; it is added as log-odds on those frames only.
+LEARNED_W_OUTSIDE = 4.0
+
+# Smart Tagging phase hint (tagging.team_side), in log-odds for the tagged team, on frames where
+# the ball is not seen. With synthetic tags of BAR-ATH's estimated quality (validation/tags_sim.py)
+# 0.5, 1 and 2 are worth +0.007 / +0.009 / +0.008 spellF1 on the dev games: small, inside the
+# noise, but never negative. On BAR-ATH itself the tags agree with the tag-free prediction on 80%
+# of ball-seen frames, which puts their accuracy near the 85% the synthetic tags assume.
+LEARNED_W_TAG = 1.0
 
 # Kickoff of the 2nd half; frames from the start of the graded block to here are all `D`
 # (FAQ.md). Source: starter/load_smart_tagging.py KICKOFF_VIDEO_FRAMES.
